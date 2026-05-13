@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from api.models.schemas import AnalysisConfig, ParamMappingConfig
-from api.pipelines.retention_ml import RetentionMLPipeline
 from core.analytics import FieldConfig, calculate_retention
 
 
@@ -195,32 +194,9 @@ class AgentToolbox:
         return {"overall": overall, "segments": segments}
 
     def train_diagnostic_model(self, df: pd.DataFrame) -> Dict[str, Any]:
-        if not self.param_config:
-            return {
-                "feature_importance": {
-                    "method": "not_configured",
-                    "business_translation": "未配置 JSON 参数映射，跳过模型归因。",
-                    "top_features": [],
-                }
-            }
-
-        result = RetentionMLPipeline(
-            mapping=self.mapping,
-            field_config=self.field_config,
-            param_config=self.param_config,
-        ).transform(df)
-        labels = result["labels"]
         return {
-            "feature_importance": result["feature_importance"],
-            "feature_matrix_shape": [
-                int(result["feature_matrix"].shape[0]),
-                int(result["feature_matrix"].shape[1]),
-            ],
-            "label_positive_rates": {
-                col: round(float(labels[col].mean()), 4)
-                for col in labels.columns
-            },
-            "virtual_fields": result["virtual_fields"],
+            "status": "disabled",
+            "reason": "Correlation-based attribution is disabled in the current phase.",
         }
 
     def plot_visuals(
@@ -229,7 +205,7 @@ class AgentToolbox:
         cohort_headers: List[str],
         cohort_matrix: List[List[Any]],
         funnel_steps: Optional[List[Dict[str, Any]]] = None,
-        feature_importance: Optional[Dict[str, Any]] = None,
+        legacy_model_info: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         line_series = []
         if self.field_config.event_date in df.columns:
@@ -250,10 +226,5 @@ class AgentToolbox:
             "funnel": {
                 "type": "funnel",
                 "steps": funnel_steps or [],
-            },
-            "shap_like_importance": {
-                "type": "bar",
-                "features": (feature_importance or {}).get("top_features", []),
-                "note": "当前为 feature_importances_ 解释图规格；如安装 shap 可替换为 SHAP 值。",
             },
         }

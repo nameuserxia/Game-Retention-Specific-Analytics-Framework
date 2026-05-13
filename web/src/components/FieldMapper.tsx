@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import type {
   AnalysisConfig,
+  AnalysisContext,
   FieldMappingRequest,
   JsonKeyDiscoveryResponse,
   JsonKeyInfo,
@@ -82,6 +83,14 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     segment_by_channel: Boolean(schema.suggestions?.channel?.[0]),
     game_genre: 'casual',
   });
+  const [analysisContext, setAnalysisContext] = useState<AnalysisContext>({
+    game_name: '',
+    gameplay: '',
+    game_genre: '其他',
+    recent_events: [] as string[],
+    main_concern: '',
+  });
+  const [recentEventsInput, setRecentEventsInput] = useState('');
 
   const requiredReady = useMemo(() => REQUIRED_FIELDS.every(item => Boolean(mapping[item.key])), [mapping]);
   const missingRequired = REQUIRED_FIELDS.filter(item => !mapping[item.key]).map(item => item.label);
@@ -174,6 +183,16 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     setParamConfig(prev => ({ ...prev, relevant_events: events }));
   }, []);
 
+  const updateAnalysisContext = useCallback((field: 'game_name' | 'gameplay' | 'game_genre' | 'main_concern', value: string) => {
+    setAnalysisContext(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  const updateRecentEvents = useCallback((value: string) => {
+    setRecentEventsInput(value);
+    const events = unique(value.split(/[,，\n]/).map(item => item.trim()));
+    setAnalysisContext(prev => ({ ...prev, recent_events: events }));
+  }, []);
+
   const addRelevantEvent = useCallback((eventName: string) => {
     const events = unique([...(paramConfig.relevant_events || []), eventName]);
     setRelevantEventsInput(events.join(', '));
@@ -199,8 +218,15 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       segment_by_country: enabledOptional.country && Boolean(mapping.country),
       segment_by_channel: enabledOptional.channel && Boolean(mapping.channel),
       param_config: enabledOptional.json_params && mapping.json_params ? paramConfig : undefined,
+      analysis_context: {
+        ...analysisContext,
+        game_name: analysisContext.game_name || undefined,
+        gameplay: analysisContext.gameplay || undefined,
+        game_genre: analysisContext.game_genre || undefined,
+        main_concern: analysisContext.main_concern || undefined,
+      },
     });
-  }, [config, enabledOptional, mapping, onValidate, paramConfig, requiredReady]);
+  }, [analysisContext, config, enabledOptional, mapping, onValidate, paramConfig, requiredReady]);
 
   const renderSelect = (field: SelectableMappingKey, required: boolean, disabled = false) => {
     const suggested = schema.suggestions?.[field]?.[0];
@@ -378,6 +404,52 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       <section className="panel">
         <div className="section-title">
           <div>
+            <p className="panel-kicker">业务上下文</p>
+            <h3>补充给 AI 报告使用的信息</h3>
+          </div>
+        </div>
+        <div className="config-grid">
+          <label className="config-row">
+            <span>游戏名称</span>
+            <input value={analysisContext.game_name || ''} onChange={(event) => updateAnalysisContext('game_name', event.target.value)} />
+          </label>
+          <label className="config-row">
+            <span>游戏类型</span>
+            <select value={analysisContext.game_genre || '其他'} onChange={(event) => updateAnalysisContext('game_genre', event.target.value)}>
+              <option value="SLG">SLG</option>
+              <option value="Roguelike">Roguelike</option>
+              <option value="Match3">Match3</option>
+              <option value="MMO">MMO</option>
+              <option value="Idle">Idle</option>
+              <option value="FPS">FPS</option>
+              <option value="棋牌">棋牌</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+          <label className="config-row">
+            <span>当前最担心的问题</span>
+            <input value={analysisContext.main_concern || ''} onChange={(event) => updateAnalysisContext('main_concern', event.target.value)} />
+          </label>
+        </div>
+        <label className="config-row context-textarea">
+          <span>游戏玩法</span>
+          <textarea rows={2} value={analysisContext.gameplay || ''} onChange={(event) => updateAnalysisContext('gameplay', event.target.value)} />
+        </label>
+        <label className="config-row context-textarea">
+          <span>最近运营事件</span>
+          <textarea
+            rows={2}
+            value={recentEventsInput}
+            onChange={(event) => updateRecentEvents(event.target.value)}
+            placeholder="例如：新版本上线，广告投放变化，活动改版，BUG，崩溃问题，买量变化"
+          />
+        </label>
+        <p>这些内容不会参与留存计算，只会进入 AI 报告上下文。</p>
+      </section>
+
+      <section className="panel">
+        <div className="section-title">
+          <div>
             <p className="panel-kicker">分析配置</p>
             <h3>设置注册窗口和留存口径</h3>
           </div>
@@ -476,7 +548,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         label { font-weight: 800; }
         .required { color: #dc2626; margin-left: 3px; }
         .field-row p, .optional-card p { margin: 4px 0 0; font-size: 13px; color: #667085; }
-        select, input[type="date"], input[type="number"], input[type="search"], textarea { min-height: 40px; width: 100%; padding: 8px 11px; color: #172033; background: #fff; border: 1px solid #c9d4e3; border-radius: 6px; outline: none; }
+        select, input, textarea { min-height: 40px; width: 100%; padding: 8px 11px; color: #172033; background: #fff; border: 1px solid #c9d4e3; border-radius: 6px; outline: none; }
         textarea { resize: vertical; line-height: 1.6; font-family: inherit; }
         select:focus, input:focus, textarea:focus { border-color: #0f766e; box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12); }
         select.empty { border-color: #f43f5e; background: #fff7f8; }
@@ -488,6 +560,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .optional-toggle input, .key-row input { width: 18px; height: 18px; accent-color: #0f766e; }
         .config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
         .config-row { display: grid; gap: 7px; color: #344054; font-size: 14px; }
+        .context-textarea { margin-top: 14px; }
         .secondary-btn { min-height: 38px; padding: 0 16px; color: #0f766e; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 6px; cursor: pointer; font-weight: 800; }
         .empty-json { padding: 14px; background: #f8fafc; border: 1px dashed #c9d4e3; border-radius: 8px; }
         .relevant-events-box { margin-bottom: 16px; padding: 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }

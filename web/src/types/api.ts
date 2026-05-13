@@ -28,6 +28,15 @@ export interface ParamMappingConfig {
   relevant_events: string[];
 }
 
+export interface AnalysisContext {
+  game_name?: string;
+  gameplay?: string;
+  game_genre?: string;
+  recent_events: string[];
+  main_concern?: string;
+  extra?: Record<string, unknown>;
+}
+
 export interface JsonKeyInfo {
   key: string;
   count: number;
@@ -60,6 +69,8 @@ export interface AnalysisConfig {
   segment_by_channel: boolean;
   game_genre?: 'casual' | 'competitive' | 'mmo' | string;
   param_config?: ParamMappingConfig;
+  analysis_context?: AnalysisContext;
+  ai_enabled?: boolean;
 }
 
 // ============================================================
@@ -160,6 +171,11 @@ export interface AnalysisResponse {
   sanity_check_report: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
   virtual_fields: string[];
+  report_id?: string;
+  report_title?: string;
+  report_path?: string;
+  llm_used: boolean;
+  llm_fallback_reason?: string;
 }
 
 // ============================================================

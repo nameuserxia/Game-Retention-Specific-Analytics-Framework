@@ -6,11 +6,13 @@ api/routes/analysis.py
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import AsyncIterator, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 import pandas as pd
 
@@ -34,7 +36,12 @@ from api.adapters.config_adapter import ConfigAdapter, FieldMapping
 from api.adapters.param_converter import ParamConverter
 from api.analyzers.specialized import RetentionDiagnosticAnalyzer
 from api.agent.retention_agent import RetentionDiagnosisAgent
-from api.pipelines.retention_ml import RetentionMLPipeline
+from api.agent.context_builder import ContextBuilder
+from api.agent.model_gateway import LLMConfig, ModelGateway
+from api.ai.retention_reporter import RetentionReporter
+from api.services.analysis_payload import build_retention_payload
+from api.services.markdown_report import render_markdown_report
+from api.services.report_store import ReportStore
 from core.analytics import (
     FieldConfig,
     SanityCheckError,
@@ -49,6 +56,167 @@ from core.analytics import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
+
+
+@router.post("/analyze/stream")
+async def run_analysis_stream(
+    session_id: str,
+    request: AnalyzeRequest,
+    force_proceed: bool = False,
+):
+    """
+    流式分析接口：先推送结构化 JSON 元数据，然后以 SSE 流式推送 LLM Markdown 报告。
+
+    与 /api/analyze 的区别：
+    - 立即推送 data_health / anomaly / path / ml 等结构化数据（JSON lines）
+    - 随后推送 LLM 生成的 Markdown 报告（流式 SSE）
+    - 前端可实时渲染 Markdown，无需等待全部生成
+    """
+    # ── 加载 LLM 配置 ───────────────────────────────────────────
+    llm_config_path = P(__file__).parent.parent.parent / "config" / "llm_config.yaml"
+    llm_config: Optional[LLMConfig] = None
+    try:
+        llm_config = LLMConfig.from_yaml(str(llm_config_path))
+        if not llm_config.is_enabled:
+            llm_config = None
+    except Exception:
+        llm_config = None
+
+    async def event_stream() -> AsyncIterator[bytes]:
+        # 先推送元数据（分析开始标记）
+        yield f"data: {json.dumps({'type': 'status', 'text': '正在计算留存数据…'}, ensure_ascii=False)}\n\n".encode()
+
+        # ── 执行分析（复用 run_analysis 的核心逻辑，但跳过最后的 report_markdown 生成）───
+        mapping = request.mapping
+        analysis_config = request.analysis_config
+        param_config = request.param_config
+
+        if not SessionManager.is_valid(session_id):
+            yield f"data: {json.dumps({'type': 'error', 'text': 'Session 已过期或不存在'}, ensure_ascii=False)}\n\n".encode()
+            return
+
+        SessionManager.update_session(session_id, status="analyzing")
+        parquet_path = SessionManager.get_parquet_path(session_id)
+
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'text': f'读取数据失败: {exc}'}, ensure_ascii=False)}\n\n".encode()
+            return
+
+        try:
+            field_mapping = FieldMapping.from_request(mapping)
+            adapter = ConfigAdapter(field_mapping)
+            df_mapped = adapter.apply_mapping(df)
+            virtual_fields = []
+            effective_param_config = param_config
+            if effective_param_config is None and mapping.json_params:
+                effective_param_config = ParamMappingConfig(json_params_col=mapping.json_params)
+            if effective_param_config and effective_param_config.json_params_col:
+                json_col = "json_params" if "json_params" in df_mapped.columns else effective_param_config.json_params_col
+                effective_param_config.json_params_col = json_col
+                converter = ParamConverter(effective_param_config)
+                df_mapped = converter.transform(df_mapped)
+                virtual_fields = converter.virtual_fields
+
+            model_diagnostics = {
+                "status": "disabled",
+                "reason": "Correlation-based attribution is disabled in the current phase.",
+            }
+            reg_start = pd.Timestamp(analysis_config.reg_start)
+            reg_end = pd.Timestamp(analysis_config.reg_end)
+            field_config = adapter.field_config
+
+            # sanity_check（跳过 force_proceed 的错误抛出，仅获取报告）
+            sanity_report = {}
+            try:
+                sanity_report = sanity_check(
+                    df_mapped,
+                    field_config,
+                    min_sample_size=analysis_config.min_sample_size,
+                    raise_on_failure=False,
+                )
+            except SanityCheckError:
+                pass
+
+            retention_result = calculate_retention(
+                df_mapped,
+                field_config,
+                reg_start,
+                reg_end,
+                retention_days=analysis_config.retention_days,
+            )
+
+            # 推送元数据（结构化数据已完成）
+            meta = {
+                "type": "meta",
+                "data_health": sanity_report,
+                "retention_result": retention_result.to_dict(orient="records") if len(retention_result) else [],
+                "virtual_fields": virtual_fields,
+                "llm_enabled": llm_config is not None,
+            }
+            yield f"data: {json.dumps(meta, ensure_ascii=False, default=str)}\n\n".encode()
+            yield f"data: {json.dumps({'type': 'status', 'text': '数据计算完成，正在生成 AI 分析…'}, ensure_ascii=False)}\n\n".encode()
+
+            # ── 调用 LLM 生成报告 ───────────────────────────────────
+            if llm_config:
+                # 先跑规则引擎（作为 LLM 上下文）
+                agent_result = RetentionDiagnosisAgent(
+                    field_config=field_config,
+                    mapping=mapping.model_dump(),
+                    analysis_config=analysis_config,
+                    param_config=effective_param_config,
+                    game_genre=getattr(analysis_config, "game_genre", "casual"),
+                    llm_config_path=str(llm_config_path),
+                ).run(
+                    df=df_mapped,
+                    cohort_headers=[],
+                    cohort_matrix=[],
+                    virtual_fields=virtual_fields,
+                    precomputed_ml=model_diagnostics,
+                )
+                # 如果规则引擎已经调用了 LLM 并拿到了结果，直接推送
+                if agent_result.get("llm_used") and isinstance(agent_result.get("structured_report"), str):
+                    for line in agent_result["structured_report"].splitlines(keepends=True):
+                        yield f"data: {json.dumps({'type': 'markdown', 'text': line}, ensure_ascii=False)}\n\n".encode()
+                else:
+                    # 否则用流式接口重新调用 LLM
+                    ctx = ContextBuilder(
+                        agent_result=agent_result,
+                        game_genre=getattr(analysis_config, "game_genre", "casual"),
+                        benchmarks=agent_result.get("brain", {}).get("benchmarks", {}),
+                    )
+                    messages = [
+                        {"role": "system", "content": ctx.system_prompt()},
+                        {"role": "user", "content": ctx.build()},
+                    ]
+                    gateway = ModelGateway(llm_config)
+                    async for chunk in gateway.chat_stream(messages):
+                        if chunk:
+                            yield f"data: {json.dumps({'type': 'markdown', 'text': chunk}, ensure_ascii=False)}\n\n".encode()
+            else:
+                # 无 LLM，推送规则引擎结果
+                yield f"data: {json.dumps({'type': 'status', 'text': 'LLM 未启用，展示规则引擎结果。'}, ensure_ascii=False)}\n\n".encode()
+                yield f"data: {json.dumps({'type': 'done', 'text': ''}, ensure_ascii=False)}\n\n".encode()
+                SessionManager.update_session(session_id, status="done")
+                return
+
+            yield f"data: {json.dumps({'type': 'done', 'text': ''}, ensure_ascii=False)}\n\n".encode()
+            SessionManager.update_session(session_id, status="done")
+
+        except Exception as exc:
+            logger.error("流式分析失败: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'text': f'分析失败: {exc}'}, ensure_ascii=False)}\n\n".encode()
+            SessionManager.update_session(session_id, status="error")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/analyze", response_model=AnalysisResponse)
@@ -116,38 +284,10 @@ async def run_analysis(
             df_mapped = converter.transform(df_mapped)
             virtual_fields = converter.virtual_fields
 
-        ml_diagnostics = {}
-        if effective_param_config:
-            try:
-                ml_result = RetentionMLPipeline(
-                    mapping=mapping.model_dump(),
-                    field_config=adapter.field_config,
-                    param_config=effective_param_config,
-                ).transform(df_mapped)
-                df_mapped = ml_result["df"]
-                virtual_fields = list(dict.fromkeys([*virtual_fields, *ml_result.get("virtual_fields", [])]))
-                labels = ml_result.get("labels")
-                ml_diagnostics = {
-                    "feature_importance": ml_result.get("feature_importance", {}),
-                    "feature_matrix_shape": [
-                        int(ml_result["feature_matrix"].shape[0]),
-                        int(ml_result["feature_matrix"].shape[1]),
-                    ],
-                    "label_positive_rates": {
-                        col: round(float(labels[col].mean()), 4)
-                        for col in labels.columns
-                    } if labels is not None else {},
-                }
-            except Exception as e:
-                logger.warning(f"ML pipeline failed: {e}")
-                ml_diagnostics = {
-                    "error": str(e),
-                    "feature_importance": {
-                        "method": "failed",
-                        "top_features": [],
-                        "business_translation": "ML 特征诊断运行失败，请检查 JSON Key 映射与数据类型。",
-                    },
-                }
+        model_diagnostics = {
+            "status": "disabled",
+            "reason": "Correlation-based attribution is disabled in the current phase.",
+        }
         
         # ── 4. 解析日期配置 ──────────────────────────────────
         
@@ -319,12 +459,12 @@ async def run_analysis(
                     reg_end=reg_end,
                     retention_days=analysis_config.retention_days,
                 )
-                diagnostics["ml_feature_diagnosis"] = ml_diagnostics
+                diagnostics["model_diagnostics"] = model_diagnostics
             except Exception as e:
                 logger.warning(f"Diagnostic analysis failed: {e}")
                 diagnostics = {
                     "error": str(e),
-                    "ml_feature_diagnosis": ml_diagnostics,
+                    "model_diagnostics": model_diagnostics,
                     "structured_diagnosis": {
                         "phenomenon": "诊断模块运行失败",
                         "attribution": str(e),
@@ -344,7 +484,7 @@ async def run_analysis(
                 cohort_headers=cohort_headers,
                 cohort_matrix=cohort_data,
                 virtual_fields=virtual_fields,
-                precomputed_ml=ml_diagnostics,
+                precomputed_ml=model_diagnostics,
             )
             diagnostics["agent_diagnosis"] = agent_result
             if not diagnostics.get("structured_diagnosis"):
@@ -368,20 +508,57 @@ async def run_analysis(
         
         # ── 10. 生成报告 ────────────────────────────────────
         
-        report_markdown = _generate_report_markdown(
+        summary = {
+            "reg_start": analysis_config.reg_start,
+            "reg_end": analysis_config.reg_end,
+            "retention_days": analysis_config.retention_days,
+            "n_total": n_total,
+            "n_retained": n_retained,
+            "n_churn": n_churn,
+            "retention_rate": retention_rate,
+        }
+        retention_records = [
+            RetentionResult(
+                segment=row["segment"],
+                n_total=row["n_total"],
+                n_retained=row["n_retained"],
+                retention_rate=row["retention_rate"],
+                note=row.get("note", "")
+            ).model_dump()
+            for _, row in retention_result.iterrows()
+        ]
+        payload = build_retention_payload(
             session_id=session_id,
-            mapping=mapping,
             analysis_config=analysis_config,
-            n_total=n_total,
-            n_retained=n_retained,
-            n_churn=n_churn,
-            retention_rate=retention_rate,
+            summary=summary,
+            retention_result=retention_records,
+            cohort_headers=cohort_headers,
+            cohort_matrix=cohort_data,
             country_retention=country_retention,
             channel_retention=channel_retention,
             top_paths=top_paths,
-            sanity_warnings=sanity_warnings,
+            sanity_report=sanity_report or {},
             diagnostics=diagnostics,
+            analysis_context=request.analysis_context,
         )
+        structured_report, llm_used, llm_fallback_reason = RetentionReporter().generate(
+            payload,
+            ai_enabled=bool(request.ai_enabled),
+        )
+        report_markdown = render_markdown_report(structured_report, payload)
+        report_metadata = None
+        try:
+            report_metadata = ReportStore.save(
+                session_id=session_id,
+                report=structured_report,
+                markdown=report_markdown,
+                payload=payload,
+                ai_enabled=bool(request.ai_enabled),
+                llm_used=llm_used,
+                fallback_reason=llm_fallback_reason,
+            )
+        except Exception as e:
+            logger.warning("Report persistence failed: %s", e)
         
         # ── 11. 更新 Session 状态 ─────────────────────────────
         
@@ -393,25 +570,8 @@ async def run_analysis(
             session_id=session_id,
             success=True,
             message="分析完成",
-            summary={
-                "reg_start": analysis_config.reg_start,
-                "reg_end": analysis_config.reg_end,
-                "retention_days": analysis_config.retention_days,
-                "n_total": n_total,
-                "n_retained": n_retained,
-                "n_churn": n_churn,
-                "retention_rate": retention_rate,
-            },
-            retention_result=[
-                RetentionResult(
-                    segment=row["segment"],
-                    n_total=row["n_total"],
-                    n_retained=row["n_retained"],
-                    retention_rate=row["retention_rate"],
-                    note=row.get("note", "")
-                ).model_dump()
-                for _, row in retention_result.iterrows()
-            ],
+            summary=summary,
+            retention_result=retention_records,
             cohort_headers=cohort_headers,
             cohort_matrix=cohort_data,
             churn_users_count=n_churn,
@@ -423,6 +583,11 @@ async def run_analysis(
             sanity_check_report=sanity_report or {},
             diagnostics=diagnostics,
             virtual_fields=virtual_fields,
+            report_id=report_metadata.report_id if report_metadata else None,
+            report_title=structured_report.title,
+            report_path=report_metadata.markdown_path if report_metadata else None,
+            llm_used=llm_used,
+            llm_fallback_reason=llm_fallback_reason or None,
         )
         
     except HTTPException:
@@ -467,7 +632,7 @@ def _generate_report_markdown(
     # 警告信息
     warnings_section = ""
     if sanity_warnings:
-        warnings_section = "\n## ⚠️ 数据质量警告\n\n"
+        warnings_section = "\n## [!] 数据质量警告\n\n"
         for w in sanity_warnings:
             warnings_section += f"- {w}\n"
 
@@ -476,14 +641,6 @@ def _generate_report_markdown(
     agent = diagnostics.get("agent_diagnosis", {}) if isinstance(diagnostics, dict) else {}
     agent_report = agent.get("structured_report", {}) if isinstance(agent, dict) else {}
     agent_tools = " -> ".join(agent.get("tool_trace", [])) if isinstance(agent, dict) else ""
-    ml_diagnosis = diagnostics.get("ml_feature_diagnosis", {})
-    feature_importance = ml_diagnosis.get("feature_importance", {}) if isinstance(ml_diagnosis, dict) else {}
-    top_features = feature_importance.get("top_features", []) if isinstance(feature_importance, dict) else []
-    top_feature_rows = ""
-    for item in top_features[:8]:
-        top_feature_rows += f"| {item.get('feature')} | {item.get('importance')} |\n"
-    if not top_feature_rows:
-        top_feature_rows = "| 暂无 | 0 |\n"
     diagnostic_section = f"""
 ## 自动诊断结论
 
@@ -502,19 +659,6 @@ def _generate_report_markdown(
 | 核心归因 | {agent_report.get('core_attribution', '暂无 Agent 核心归因')} |
 | 业务策略 | {agent_report.get('business_strategy', '暂无 Agent 业务策略')} |
 | 工具调用链 | {agent_tools or '未记录'} |
-
-## ML 特征重要性诊断
-
-| 项目 | 结果 |
-|------|------|
-| 模型/方法 | {feature_importance.get('method', '未运行')} |
-| 预测目标 | {feature_importance.get('target', 'D1 留存标签')} |
-| 样本 x 特征 | {ml_diagnosis.get('feature_matrix_shape', ['-', '-'])} |
-| 业务翻译 | {feature_importance.get('business_translation', '暂无模型诊断建议')} |
-
-| 特征 | 重要性 |
-|------|------|
-{top_feature_rows}
 """
     
     content = f"""# 留存分析报告

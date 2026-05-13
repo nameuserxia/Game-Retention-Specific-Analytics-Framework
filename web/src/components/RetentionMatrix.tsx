@@ -6,9 +6,20 @@ interface RetentionMatrixProps {
   onNewAnalysis: () => void;
   onBackToMapping: () => void;
   onDestroySession: () => void;
+  /** AI 流式模式的实时 Markdown 文本 */
+  llmText?: string;
+  /** AI 流式模式是否已完成 */
+  llmDone?: boolean;
 }
 
-export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDestroySession }: RetentionMatrixProps) {
+export function RetentionMatrix({
+  result,
+  onNewAnalysis,
+  onBackToMapping,
+  onDestroySession,
+  llmText = '',
+  llmDone = false,
+}: RetentionMatrixProps) {
   const [showAllCohorts, setShowAllCohorts] = useState(false);
   const {
     summary,
@@ -23,14 +34,8 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
   } = result;
 
   const structuredDiagnosis = (diagnostics?.structured_diagnosis || {}) as Record<string, string>;
-  const mlDiagnosis = (diagnostics?.ml_feature_diagnosis || {}) as Record<string, unknown>;
   const agentDiagnosis = (diagnostics?.agent_diagnosis || {}) as Record<string, unknown>;
   const agentReport = (agentDiagnosis.structured_report || {}) as Record<string, string>;
-  const featureImportance = (mlDiagnosis.feature_importance || {}) as {
-    method?: string;
-    business_translation?: string;
-    top_features?: Array<{ feature: string; importance: number }>;
-  };
   const visibleCohortRows = showAllCohorts ? cohort_matrix : cohort_matrix.slice(0, 12);
 
   const getRetentionColor = (rate: number) => {
@@ -194,22 +199,6 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
               <strong>{structuredDiagnosis.suggestion || '继续观察分群和关键路径变化'}</strong>
             </div>
           </div>
-          {featureImportance.business_translation && (
-            <div className="ml-diagnosis">
-              <div>
-                <span>ML 特征重要性</span>
-                <strong>{featureImportance.business_translation}</strong>
-                <small>方法：{featureImportance.method || '未运行'}</small>
-              </div>
-              <ol>
-                {(featureImportance.top_features || []).slice(0, 5).map(item => (
-                  <li key={item.feature}>
-                    {item.feature} <b>{Number(item.importance).toFixed(4)}</b>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
           {Object.keys(agentReport).length > 0 && (
             <div className="agent-report">
               <h4>Agent 诊断书</h4>
@@ -225,6 +214,20 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
               </dl>
             </div>
           )}
+        </section>
+      )}
+
+      {/* ── AI 流式分析报告（LLM 模式） ─────────────────────── */}
+      {llmText && (
+        <section className="panel llm-report-panel">
+          <div className="section-title">
+            <h3>AI 专家分析报告</h3>
+            {!llmDone && <span className="llm-badge">生成中…</span>}
+            {llmDone && <span className="llm-badge-done">已完成</span>}
+          </div>
+          <div className="llm-markdown-body">
+            <pre className="llm-output">{llmText}</pre>
+          </div>
         </section>
       )}
 
@@ -601,6 +604,57 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
           margin: 0;
           color: #344054;
           line-height: 1.7;
+        }
+
+        .llm-report-panel {
+          border-color: #ddd6fe;
+          background: #faf9ff;
+        }
+
+        .llm-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 10px;
+          color: #fff;
+          background: #7c3aed;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+          animation: llm-pulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes llm-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.6; }
+        }
+
+        .llm-badge-done {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 10px;
+          color: #fff;
+          background: #059669;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .llm-markdown-body {
+          margin-top: 12px;
+          padding: 16px;
+          background: #fff;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+        }
+
+        .llm-output {
+          margin: 0;
+          color: #172033;
+          font-size: 14px;
+          line-height: 1.8;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: inherit;
         }
 
         .download-btn,
