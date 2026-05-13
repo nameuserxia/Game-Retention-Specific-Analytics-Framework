@@ -6,9 +6,20 @@ interface RetentionMatrixProps {
   onNewAnalysis: () => void;
   onBackToMapping: () => void;
   onDestroySession: () => void;
+  /** AI 流式模式的实时 Markdown 文本 */
+  llmText?: string;
+  /** AI 流式模式是否已完成 */
+  llmDone?: boolean;
 }
 
-export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDestroySession }: RetentionMatrixProps) {
+export function RetentionMatrix({
+  result,
+  onNewAnalysis,
+  onBackToMapping,
+  onDestroySession,
+  llmText = '',
+  llmDone = false,
+}: RetentionMatrixProps) {
   const [showAllCohorts, setShowAllCohorts] = useState(false);
   const {
     summary,
@@ -20,17 +31,13 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
     report_markdown,
     diagnostics,
     virtual_fields,
+    dynamic_retention = [],
+    funnel_analysis,
   } = result;
 
   const structuredDiagnosis = (diagnostics?.structured_diagnosis || {}) as Record<string, string>;
-  const mlDiagnosis = (diagnostics?.ml_feature_diagnosis || {}) as Record<string, unknown>;
   const agentDiagnosis = (diagnostics?.agent_diagnosis || {}) as Record<string, unknown>;
   const agentReport = (agentDiagnosis.structured_report || {}) as Record<string, string>;
-  const featureImportance = (mlDiagnosis.feature_importance || {}) as {
-    method?: string;
-    business_translation?: string;
-    top_features?: Array<{ feature: string; importance: number }>;
-  };
   const visibleCohortRows = showAllCohorts ? cohort_matrix : cohort_matrix.slice(0, 12);
 
   const getRetentionColor = (rate: number) => {
@@ -174,6 +181,89 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
       {renderSegmentTable('按国家/地区分群', '国家/地区', country_retention)}
       {renderSegmentTable('按渠道来源分群', '渠道', channel_retention)}
 
+      {dynamic_retention.length > 0 && (
+        <section className="panel">
+          <div className="section-title">
+            <h3>动态分群留存分析</h3>
+            <span>{dynamic_retention.length} 个维度组合</span>
+          </div>
+          {dynamic_retention.slice(0, 3).map(item => (
+            <div className="dynamic-block" key={item.dimensions.join('|') || 'dynamic'}>
+              <h4>{item.dimensions.join(' + ') || '未命名维度'}</h4>
+              {item.warnings?.length > 0 && <p className="inline-warning">{item.warnings.join('；')}</p>}
+              {item.groups.length > 0 ? (
+                <div className="table-wrapper">
+                  <table className="segment-table">
+                    <thead>
+                      <tr>
+                        <th>分组</th>
+                        <th>样本量</th>
+                        <th>D1</th>
+                        <th>D3</th>
+                        <th>D7</th>
+                        <th>D14</th>
+                        <th>提示</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.groups.slice(0, 10).map(group => (
+                        <tr key={group.group_key}>
+                          <td>{group.group_key}</td>
+                          <td>{group.cohort_size.toLocaleString()}</td>
+                          <td>{formatRetention((group.retention.D1 ?? 0) * 100)}</td>
+                          <td>{formatRetention((group.retention.D3 ?? 0) * 100)}</td>
+                          <td>{formatRetention((group.retention.D7 ?? 0) * 100)}</td>
+                          <td>{formatRetention((group.retention.D14 ?? 0) * 100)}</td>
+                          <td>{group.sample_warning ? '样本过小' : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="inline-warning">当前维度组合没有可展示分组。</p>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {funnel_analysis?.steps?.length ? (
+        <section className="panel">
+          <div className="section-title">
+            <h3>漏斗转化分析</h3>
+            <span>{funnel_analysis.steps.length} 个步骤</span>
+          </div>
+          {funnel_analysis.warnings?.length > 0 && <p className="inline-warning">{funnel_analysis.warnings.join('；')}</p>}
+          <div className="table-wrapper">
+            <table className="segment-table">
+              <thead>
+                <tr>
+                  <th>步骤</th>
+                  <th>用户数</th>
+                  <th>单步转化</th>
+                  <th>总体转化</th>
+                  <th>流失用户</th>
+                  <th>流失率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {funnel_analysis.steps.map((step, index) => (
+                  <tr key={`${step.event}-${index}`}>
+                    <td>{step.event}</td>
+                    <td>{step.users.toLocaleString()}</td>
+                    <td>{formatRetention(step.step_conversion_rate * 100)}</td>
+                    <td>{formatRetention(step.overall_conversion_rate * 100)}</td>
+                    <td>{step.dropoff_users.toLocaleString()}</td>
+                    <td>{formatRetention(step.dropoff_rate * 100)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {structuredDiagnosis && Object.keys(structuredDiagnosis).length > 0 && (
         <section className="panel diagnosis-panel">
           <div className="section-title">
@@ -194,22 +284,6 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
               <strong>{structuredDiagnosis.suggestion || '继续观察分群和关键路径变化'}</strong>
             </div>
           </div>
-          {featureImportance.business_translation && (
-            <div className="ml-diagnosis">
-              <div>
-                <span>ML 特征重要性</span>
-                <strong>{featureImportance.business_translation}</strong>
-                <small>方法：{featureImportance.method || '未运行'}</small>
-              </div>
-              <ol>
-                {(featureImportance.top_features || []).slice(0, 5).map(item => (
-                  <li key={item.feature}>
-                    {item.feature} <b>{Number(item.importance).toFixed(4)}</b>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
           {Object.keys(agentReport).length > 0 && (
             <div className="agent-report">
               <h4>Agent 诊断书</h4>
@@ -225,6 +299,20 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
               </dl>
             </div>
           )}
+        </section>
+      )}
+
+      {/* ── AI 流式分析报告（LLM 模式） ─────────────────────── */}
+      {llmText && (
+        <section className="panel llm-report-panel">
+          <div className="section-title">
+            <h3>AI 专家分析报告</h3>
+            {!llmDone && <span className="llm-badge">生成中…</span>}
+            {llmDone && <span className="llm-badge-done">已完成</span>}
+          </div>
+          <div className="llm-markdown-body">
+            <pre className="llm-output">{llmText}</pre>
+          </div>
         </section>
       )}
 
@@ -469,6 +557,30 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
           font-weight: 800;
         }
 
+        .dynamic-block {
+          margin-top: 16px;
+        }
+
+        .dynamic-block:first-of-type {
+          margin-top: 0;
+        }
+
+        .dynamic-block h4 {
+          margin: 0 0 10px;
+          color: #172033;
+          font-size: 15px;
+        }
+
+        .inline-warning {
+          margin: 0 0 10px;
+          padding: 8px 10px;
+          color: #854d0e;
+          background: #fffbeb;
+          border: 1px solid #fde68a;
+          border-radius: 6px;
+          font-size: 13px;
+        }
+
         .path-cell {
           min-width: 320px;
         }
@@ -601,6 +713,57 @@ export function RetentionMatrix({ result, onNewAnalysis, onBackToMapping, onDest
           margin: 0;
           color: #344054;
           line-height: 1.7;
+        }
+
+        .llm-report-panel {
+          border-color: #ddd6fe;
+          background: #faf9ff;
+        }
+
+        .llm-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 10px;
+          color: #fff;
+          background: #7c3aed;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+          animation: llm-pulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes llm-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.6; }
+        }
+
+        .llm-badge-done {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 10px;
+          color: #fff;
+          background: #059669;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .llm-markdown-body {
+          margin-top: 12px;
+          padding: 16px;
+          background: #fff;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+        }
+
+        .llm-output {
+          margin: 0;
+          color: #172033;
+          font-size: 14px;
+          line-height: 1.8;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: inherit;
         }
 
         .download-btn,

@@ -17,6 +17,15 @@ run_analysis.py
 
 from __future__ import annotations
 
+# Windows 控制台 UTF-8 修复
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 import argparse
 import os
 import sys
@@ -82,7 +91,7 @@ def run(
     try:
         cfg, game_config = load_config(config_path)
     except Exception as e:
-        print(f"❌ 配置文件加载失败：{e}")
+        print(f"[FAIL] 配置文件加载失败：{e}")
         sys.exit(1)
 
     game_name = game_config.get('game', {}).get('name', '未知游戏')
@@ -100,7 +109,7 @@ def run(
         df_raw = pd.read_csv(data_path, encoding='utf-8-sig', low_memory=False)
         print(f"  原始数据: {len(df_raw):,} 行 × {len(df_raw.columns)} 列")
     except Exception as e:
-        print(f"❌ 数据加载失败：{e}")
+        print(f"[FAIL] 数据加载失败：{e}")
         sys.exit(1)
 
     # 字段映射 + 日期解析
@@ -108,7 +117,7 @@ def run(
         df = apply_field_mapping(df_raw, game_config['field_mapping'])
         df = parse_dates_from_config(df, game_config, cfg)
     except Exception as e:
-        print(f"❌ 数据预处理失败：{e}")
+        print(f"[FAIL] 数据预处理失败：{e}")
         sys.exit(1)
 
     # ── Step 3: 校验先行 ──
@@ -121,14 +130,14 @@ def run(
                 raise_on_failure=True,
             )
         except SanityCheckError as e:
-            print(f"\n❌ 数据质量校验失败，分析中止：\n  {e}")
+            print(f"\n[FAIL] 数据质量校验失败，分析中止：\n  {e}")
             print("\n建议：")
             print("  1. 检查日期格式是否与 date_formats 配置一致")
             print("  2. 确认 field_mapping 中的字段名与 CSV 列名一致")
             print("  3. 若要强制跳过校验，使用 --skip-sanity-check（不推荐）")
             sys.exit(1)
     else:
-        print("  ⚠️  校验已跳过（--skip-sanity-check）")
+        print("  [SKIP] 校验已跳过（--skip-sanity-check）")
 
     # ── Step 4: 流失 & 留存判定 ──
     print(f"\n[4/6] 计算 D+{retention_days} 留存率...")
@@ -194,7 +203,7 @@ def run(
         channel_retention=channel_retention,
         top_paths=top_paths,
     )
-    print(f"\n✅ 报告已生成：{report_path}")
+    print(f"\n[DONE] 报告已生成：{report_path}")
     print(f"{'='*60}")
 
 

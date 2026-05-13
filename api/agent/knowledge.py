@@ -16,21 +16,27 @@ SYSTEM_PROMPT = """
 
 GAME_BENCHMARKS: Dict[str, Dict[str, Dict[str, float]]] = {
     "casual": {
-        "d1": {"low": 25.0, "good": 35.0},
-        "d7": {"low": 8.0, "good": 15.0},
-        "d30": {"low": 3.0, "good": 8.0},
+        "d1": {"low": 25.0, "median": 32.0, "good": 40.0, "excellent": 45.0},
+        "d3": {"low": 12.0, "median": 18.0, "good": 25.0, "excellent": 30.0},
+        "d7": {"low": 8.0, "median": 12.0, "good": 18.0, "excellent": 25.0},
+        "d14": {"low": 5.0, "median": 8.0, "good": 14.0, "excellent": 18.0},
+        "d30": {"low": 3.0, "median": 5.0, "good": 10.0, "excellent": 15.0},
         "ltv_hint": {"note": "休闲游戏通常更依赖广告 LTV 和短周期回访。"},
     },
     "competitive": {
-        "d1": {"low": 35.0, "good": 45.0},
-        "d7": {"low": 15.0, "good": 25.0},
-        "d30": {"low": 6.0, "good": 12.0},
+        "d1": {"low": 35.0, "median": 42.0, "good": 50.0, "excellent": 55.0},
+        "d3": {"low": 20.0, "median": 28.0, "good": 38.0, "excellent": 45.0},
+        "d7": {"low": 15.0, "median": 22.0, "good": 32.0, "excellent": 40.0},
+        "d14": {"low": 10.0, "median": 16.0, "good": 25.0, "excellent": 32.0},
+        "d30": {"low": 6.0, "median": 10.0, "good": 18.0, "excellent": 25.0},
         "ltv_hint": {"note": "竞技游戏需要关注匹配公平性、胜率和排位挫败。"},
     },
     "mmo": {
-        "d1": {"low": 30.0, "good": 40.0},
-        "d7": {"low": 12.0, "good": 20.0},
-        "d30": {"low": 6.0, "good": 15.0},
+        "d1": {"low": 30.0, "median": 38.0, "good": 45.0, "excellent": 52.0},
+        "d3": {"low": 18.0, "median": 25.0, "good": 35.0, "excellent": 42.0},
+        "d7": {"low": 12.0, "median": 18.0, "good": 28.0, "excellent": 35.0},
+        "d14": {"low": 8.0, "median": 14.0, "good": 22.0, "excellent": 28.0},
+        "d30": {"low": 6.0, "median": 12.0, "good": 20.0, "excellent": 28.0},
         "ltv_hint": {"note": "MMO 更依赖社交关系、成长线和中长期付费深度。"},
     },
 }
@@ -59,10 +65,13 @@ def benchmark_comment(retention_days: int, retention_rate: float, game_genre: st
 
     low = bench[key]["low"]
     good = bench[key]["good"]
-    if retention_rate >= good:
+    excellent = bench[key].get("excellent", good)
+    if retention_rate >= excellent:
         level = "高于优秀线"
+    elif retention_rate >= good:
+        level = "高于良好线"
     elif retention_rate >= low:
         level = "处于可接受区间"
     else:
         level = "低于行业警戒线"
-    return f"D{retention_days} 留存率 {retention_rate:.2f}%，{level}（参考区间：警戒 {low:.0f}% / 优秀 {good:.0f}%）。"
+    return f"D{retention_days} 留存率 {retention_rate:.2f}%，{level}（参考区间：警戒 {low:.0f}% / 良好 {good:.0f}% / 优秀 {excellent:.0f}%）。"

@@ -201,6 +201,9 @@ export function useAnalysis() {
     return response.json();
   }, [clearError, state.sessionId]);
 
+  /**
+   * 常规分析（非流式），分析完成后一次性返回完整结果。
+   */
   const runAnalysis = useCallback(async (
     mapping: FieldMappingRequest,
     config: AnalysisConfig,
@@ -219,7 +222,15 @@ export function useAnalysis() {
         session_id: state.sessionId,
         force_proceed: String(forceProceed),
       });
-      const { param_config, ...analysisConfig } = config;
+      const {
+        param_config,
+        analysis_context,
+        ai_enabled,
+        dynamic_dimensions,
+        funnel_steps,
+        dynamic_retention_days,
+        ...analysisConfig
+      } = config;
       const response = await fetch(`${API_BASE}/api/analyze?${params}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -227,6 +238,11 @@ export function useAnalysis() {
           mapping,
           analysis_config: analysisConfig,
           param_config,
+          analysis_context,
+          ai_enabled: Boolean(ai_enabled),
+          dynamic_dimensions,
+          funnel_steps,
+          dynamic_retention_days,
         }),
       });
 
@@ -246,6 +262,121 @@ export function useAnalysis() {
       const message = error instanceof Error ? error.message : '分析失败，请检查日期窗口和字段映射。';
       setError(message);
       throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [clearError, setError, state.sessionId, updateState]);
+
+  /**
+   * 流式分析（LLM 模式）：
+   * 调用 /api/analyze/stream，通过 SSE 实时接收 LLM Markdown 输出。
+   *
+   * @param onChunk        每收到一个 markdown 文本块时调用
+   * @param onMeta         收到结构化元数据时调用
+   * @param onStatus       收到状态消息时调用
+   * @param onDone         流结束时调用
+   */
+  const runAnalysisStream = useCallback(async (
+    mapping: FieldMappingRequest,
+    config: AnalysisConfig,
+    forceProceed: boolean = false,
+    callbacks: {
+      onChunk?: (text: string) => void;
+      onMeta?: (meta: Record<string, unknown>) => void;
+      onStatus?: (text: string) => void;
+      onDone?: () => void;
+    } = {},
+  ): Promise<void> => {
+    if (!state.sessionId) {
+      throw new Error('当前没有可用的上传会话，请重新上传文件。');
+    }
+
+    setIsLoading(true);
+    clearError();
+    updateState({ step: 'analyzing' });
+
+    try {
+      const params = new URLSearchParams({
+        session_id: state.sessionId,
+        force_proceed: String(forceProceed),
+      });
+      const {
+        param_config,
+        analysis_context,
+        ai_enabled,
+        dynamic_dimensions,
+        funnel_steps,
+        dynamic_retention_days,
+        ...analysisConfig
+      } = config;
+      const response = await fetch(`${API_BASE}/api/analyze/stream?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mapping,
+          analysis_config: analysisConfig,
+          param_config,
+          analysis_context,
+          ai_enabled: Boolean(ai_enabled),
+          dynamic_dimensions,
+          funnel_steps,
+          dynamic_retention_days,
+        }),
+      });
+
+      if (!response.ok) {
+        const errMsg = await readError(response, '流式分析失败');
+        throw new Error(errMsg);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      if (!reader) throw new Error('流式响应不可读');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          try {
+            const event = JSON.parse(raw);
+            switch (event.type) {
+              case 'status':
+                callbacks.onStatus?.(event.text ?? '');
+                break;
+              case 'meta':
+                callbacks.onMeta?.(event);
+                break;
+              case 'markdown':
+                callbacks.onChunk?.(event.text ?? '');
+                break;
+              case 'done':
+                callbacks.onDone?.();
+                break;
+              case 'error':
+                setError(event.text ?? '分析失败');
+                callbacks.onDone?.();
+                break;
+            }
+          } catch {
+            // 非 JSON 行（分隔符等），忽略
+          }
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '流式分析失败';
+      setError(message);
+      callbacks.onDone?.();
     } finally {
       setIsLoading(false);
     }
@@ -273,6 +404,7 @@ export function useAnalysis() {
     validateMapping,
     detectJsonKeys,
     runAnalysis,
+    runAnalysisStream,
     destroySession,
     reset,
     setError,

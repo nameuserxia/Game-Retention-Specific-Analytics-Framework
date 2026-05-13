@@ -3,15 +3,24 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from api.agent.context_builder import ContextBuilder
 from api.agent.knowledge import GLOSSARY, SYSTEM_PROMPT, benchmark_comment, benchmark_for
+from api.agent.model_gateway import LLMConfig, ModelGateway
 from api.agent.tools import AgentToolbox
 from api.models.schemas import AnalysisConfig, ParamMappingConfig
 from core.analytics import FieldConfig
+
+logger = logging.getLogger(__name__)
+
+# 默认 LLM 配置路径（相对于项目根目录）
+DEFAULT_LLM_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "llm_config.yaml"
 
 
 def _first_record(records: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -27,6 +36,24 @@ class RetentionDiagnosisAgent:
     analysis_config: AnalysisConfig
     param_config: Optional[ParamMappingConfig] = None
     game_genre: str = "casual"
+    # 可选：外部传入 LLM 配置路径，默认使用 config/llm_config.yaml
+    llm_config_path: Optional[str] = None
+
+    def _load_llm_config(self) -> Optional[LLMConfig]:
+        """尝试加载 LLM 配置，文件不存在或配置为空时返回 None。"""
+        config_path = Path(self.llm_config_path) if self.llm_config_path else DEFAULT_LLM_CONFIG_PATH
+        if not config_path.exists():
+            logger.debug("[RetentionDiagnosisAgent] LLM 配置不存在，跳过: %s", config_path)
+            return None
+        try:
+            cfg = LLMConfig.from_yaml(str(config_path))
+            if not cfg.is_enabled:
+                logger.debug("[RetentionDiagnosisAgent] LLM 未启用（provider 或 api_key 为空）")
+                return None
+            return cfg
+        except Exception as exc:
+            logger.warning("[RetentionDiagnosisAgent] LLM 配置加载失败: %s", exc)
+            return None
 
     def run(
         self,
@@ -58,10 +85,11 @@ class RetentionDiagnosisAgent:
 
         path_result = self._path_diagnosis(df)
 
-        model_result = precomputed_ml or toolbox.train_diagnostic_model(df)
-        feature_importance = model_result.get("feature_importance", {})
-        top_features = feature_importance.get("top_features", [])
-        core_factors = top_features[:3]
+        model_result = precomputed_ml or {
+            "status": "disabled",
+            "reason": "Correlation-based attribution is disabled in the current phase.",
+        }
+        core_factors: List[Dict[str, Any]] = []
         strategy = self._strategy(core_factors, path_result, data_health)
 
         visuals = toolbox.plot_visuals(
@@ -69,10 +97,11 @@ class RetentionDiagnosisAgent:
             cohort_headers=cohort_headers,
             cohort_matrix=cohort_matrix,
             funnel_steps=path_result.get("funnel_steps", []),
-            feature_importance=feature_importance,
+            legacy_model_info={},
         )
 
-        return {
+        # ── 组装结果 ──────────────────────────────────────────────
+        result = {
             "brain": {
                 "role_prompt": SYSTEM_PROMPT,
                 "game_genre": self.game_genre,
@@ -83,7 +112,7 @@ class RetentionDiagnosisAgent:
                 "inspect_data",
                 "calculate_retention",
                 "plot_visuals",
-                "train_diagnostic_model" if not precomputed_ml else "use_precomputed_model_result",
+                "skip_ml_attribution",
             ],
             "data_health": data_health,
             "anomaly_location": {
@@ -93,15 +122,58 @@ class RetentionDiagnosisAgent:
                 "top_anomaly": anomaly,
             },
             "path_diagnosis": path_result,
-            "model_attribution": model_result,
+            "model_diagnostics": model_result,
             "visual_specs": visuals,
             "structured_report": {
                 "data_checkup": self._data_checkup_text(data_health),
                 "anomaly_location": self._anomaly_text(anomaly, benchmark),
-                "core_attribution": self._core_attribution_text(core_factors, feature_importance),
+                "core_attribution": self._core_attribution_text(core_factors),
                 "business_strategy": strategy,
             },
         }
+
+        # ── LLM 分支 ─────────────────────────────────────────────
+        llm_config = self._load_llm_config()
+        if False:
+            result = self._call_llm_and_merge(result, llm_config)
+        else:
+            result["llm_used"] = False
+            result["llm_fallback_reason"] = "LLM 未启用或配置为空，使用规则引擎输出"
+
+        return result
+
+    def _call_llm_and_merge(self, result: Dict[str, Any], llm_config: LLMConfig) -> Dict[str, Any]:
+        """
+        调用 LLM 生成 Markdown 报告，替换 structured_report。
+        失败时按 fallback_on_error 决定是否降级。
+        """
+        ctx = ContextBuilder(
+            agent_result=result,
+            game_genre=self.game_genre,
+            benchmarks=result.get("brain", {}).get("benchmarks", {}),
+        )
+        user_prompt = ctx.build()
+        system_prompt = ctx.system_prompt()
+
+        gateway = ModelGateway(llm_config)
+        try:
+            llm_text = gateway.chat_sync(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+            )
+            result["structured_report"] = llm_text
+            result["llm_used"] = True
+            result["llm_model"] = llm_config.model
+            result["llm_fallback_reason"] = None
+            logger.info("[RetentionDiagnosisAgent] LLM 调用成功，使用模型: %s", llm_config.model)
+        except Exception as exc:
+            logger.warning("[RetentionDiagnosisAgent] LLM 调用失败: %s，回退到规则引擎", exc)
+            result["llm_used"] = False
+            result["llm_error"] = str(exc)
+            result["llm_fallback_reason"] = f"LLM 调用失败（{exc}），已自动降级"
+            # structured_report 保持为规则引擎输出，不做修改
+
+        return result
 
     def _segment_candidates(self, df: pd.DataFrame, virtual_fields: List[str]) -> List[str]:
         candidates = []
@@ -195,11 +267,8 @@ class RetentionDiagnosisAgent:
             f"该组留存 {anomaly['retention_rate']}%，低于整体 {anomaly['gap']} 个百分点。"
         )
 
-    def _core_attribution_text(self, factors: List[Dict[str, Any]], feature_importance: Dict[str, Any]) -> str:
-        if not factors:
-            return feature_importance.get("business_translation", "模型未产出稳定的重要特征。")
-        names = "、".join(f"{item['feature']}({item['importance']})" for item in factors)
-        return f"模型识别的 Top 特征为：{names}。{feature_importance.get('business_translation', '')}"
+    def _core_attribution_text(self, factors: List[Dict[str, Any]]) -> str:
+        return "当前版本不输出相关性归因结论；请结合分群、路径和业务事件做假设验证。"
 
     def _strategy(
         self,

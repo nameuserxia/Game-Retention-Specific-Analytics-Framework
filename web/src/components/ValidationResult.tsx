@@ -1,10 +1,11 @@
+import { useState } from 'react';
 import type { ValidationResponse, AnalysisConfig, FieldMappingRequest } from '../types/api';
 
 interface ValidationResultProps {
   validation: ValidationResponse;
   mapping: FieldMappingRequest;
   config: AnalysisConfig;
-  onContinue: (forceProceed: boolean) => void;
+  onContinue: (forceProceed: boolean, aiMode: boolean) => void;
   onBack: () => void;
   isLoading: boolean;
 }
@@ -27,6 +28,7 @@ export function ValidationResult({
   onBack,
   isLoading,
 }: ValidationResultProps) {
+  const [aiMode, setAiMode] = useState(false);
   const { parse_results, errors, warnings, can_proceed } = validation;
 
   return (
@@ -149,17 +151,28 @@ export function ValidationResult({
         </button>
         <div className="continue-actions">
           {!can_proceed && (
-            <button className="btn-force" onClick={() => onContinue(true)} disabled={isLoading}>
+            <button className="btn-force" onClick={() => onContinue(true, aiMode)} disabled={isLoading}>
               强制继续
             </button>
           )}
-          <button
-            className="btn-continue"
-            onClick={() => onContinue(false)}
-            disabled={!can_proceed || isLoading}
-          >
-            {isLoading ? '分析中...' : '开始分析'}
-          </button>
+          <div className="ai-mode-row">
+            <label className="ai-toggle">
+              <input
+                type="checkbox"
+                checked={aiMode}
+                onChange={e => setAiMode(e.target.checked)}
+                disabled={isLoading}
+              />
+              <span>AI 分析模式（结构化报告，可自动降级）</span>
+            </label>
+            <button
+              className="btn-continue"
+              onClick={() => onContinue(false, aiMode)}
+              disabled={!can_proceed || isLoading}
+            >
+              {isLoading ? '分析中...' : aiMode ? '开始 AI 分析' : '开始分析'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -391,6 +404,33 @@ export function ValidationResult({
         .btn-continue {
           color: #fff;
           background: #0f766e;
+        }
+
+        .ai-mode-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+        }
+
+        .ai-toggle {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+          color: #344054;
+          font-size: 14px;
+          font-weight: 700;
+        }
+
+        .ai-toggle input {
+          width: 18px;
+          height: 18px;
+          accent-color: #7c3aed;
+        }
+
+        .ai-toggle input:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         button:disabled {

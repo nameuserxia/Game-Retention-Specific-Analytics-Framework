@@ -28,13 +28,17 @@ export default function App() {
 
   const [validationMapping, setValidationMapping] = useState<FieldMappingRequest | null>(null);
   const [validationConfig, setValidationConfig] = useState<AnalysisConfig | null>(null);
+  const [llmText, setLlmText] = useState('');    // 实时 LLM 输出
+  const [llmDone, setLlmDone] = useState(false); // LLM 流是否结束
+  const [streamStatus, setStreamStatus] = useState(''); // 流式状态消息
+
   const analysisStages = [
     '读取 Parquet 数据',
     '应用字段映射',
     '数据质量校验',
     '计算留存与 Cohort',
     '分析流失路径',
-    '运行 JSON/ML/Agent 诊断',
+    '运行 JSON/Agent 诊断',
     '生成 Markdown 报告',
   ];
 
@@ -48,9 +52,18 @@ export default function App() {
     await validateMapping(mapping, false);
   }, [validateMapping]);
 
-  const handleContinue = useCallback(async (forceProceed: boolean) => {
+  const handleContinue = useCallback(async (forceProceed: boolean, useAiMode: boolean = false) => {
     if (!validationMapping || !validationConfig) return;
-    await runAnalysis(validationMapping, validationConfig, forceProceed);
+
+    setLlmText('');
+    setLlmDone(false);
+    setStreamStatus(useAiMode ? '正在生成 AI 结构化报告...' : '');
+    await runAnalysis(
+      validationMapping,
+      { ...validationConfig, ai_enabled: useAiMode },
+      forceProceed,
+    );
+    setLlmDone(useAiMode);
   }, [validationMapping, validationConfig, runAnalysis]);
 
   const handleBack = useCallback(() => {
@@ -158,14 +171,25 @@ export default function App() {
           <div className="loading-container">
             <div className="spinner-large" />
             <h3>正在分析数据</h3>
-            <p>正在计算留存率、Cohort 矩阵和流失用户行为路径，请稍候。</p>
-            <div className="analysis-stage-list">
-              {analysisStages.map((stage, index) => (
-                <span key={stage} style={{ animationDelay: `${index * 0.35}s` }}>
-                  {stage}
-                </span>
-              ))}
-            </div>
+            {streamStatus ? (
+              <p className="stream-status">{streamStatus}</p>
+            ) : (
+              <p>正在计算留存率、Cohort 矩阵和流失用户行为路径，请稍候。</p>
+            )}
+            {llmText ? (
+              <div className="llm-preview">
+                <h4>AI 报告生成中…</h4>
+                <pre className="llm-live">{llmText}</pre>
+              </div>
+            ) : (
+              <div className="analysis-stage-list">
+                {analysisStages.map((stage, index) => (
+                  <span key={stage} style={{ animationDelay: `${index * 0.35}s` }}>
+                    {stage}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         );
 
@@ -178,6 +202,8 @@ export default function App() {
               onNewAnalysis={handleNewAnalysis}
               onBackToMapping={handleBackToMapping}
               onDestroySession={handleDestroy}
+              llmText={llmText}
+              llmDone={llmDone}
             />
           </div>
         );
@@ -448,6 +474,45 @@ export default function App() {
         }
 
         .loading-container p {
+          margin: 0;
+          color: #5d6b82;
+        }
+
+        .stream-status {
+          color: #7c3aed !important;
+          font-weight: 700;
+          font-size: 15px;
+        }
+
+        .llm-preview {
+          margin-top: 22px;
+          padding: 16px;
+          background: #faf9ff;
+          border: 1px solid #ddd6fe;
+          border-radius: 8px;
+          text-align: left;
+        }
+
+        .llm-preview h4 {
+          margin: 0 0 10px;
+          color: #7c3aed;
+          font-size: 14px;
+        }
+
+        .llm-live {
+          margin: 0;
+          padding: 12px;
+          max-height: 380px;
+          overflow-y: auto;
+          background: #fff;
+          border: 1px solid #e2e8f0;
+          border-radius: 6px;
+          color: #172033;
+          font-size: 13px;
+          line-height: 1.6;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
           margin: 0;
           color: #5d6b82;
         }
