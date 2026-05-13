@@ -1,0 +1,57 @@
+# Generic example game configuration.
+# Map source file columns to the framework's standard field names.
+
+game:
+  name: "Example Puzzle Game"
+  version: "1.0"
+  description: "Sanitized retention analysis example"
+
+analysis:
+  reg_start: "2026-01-01"
+  reg_end: "2026-01-31"
+  retention_days: 1
+  min_sample_size: 30
+
+field_mapping:
+  user_id: "user_id"
+  event_time: "event_time"
+  event_date: "event_date"
+  reg_date: "reg_date"
+  event_name: "event_name"
+  country: "country"
+  channel: "channel"
+  extra_fields:
+    event_params: "event_params"
+
+date_formats:
+  event_time: "%Y-%m-%d %H:%M:%S"
+  event_date: "%Y-%m-%d"
+  reg_date: "%Y-%m-%d"
+
+events:
+  session_start:
+    - "app_open"
+  level_start:
+    - "level_start"
+  level_pass:
+    - "level_complete"
+  level_fail:
+    - "level_fail"
+  interstitial:
+    - "ad_interstitial_show"
+  rewarded_video:
+    - "ad_rewarded_video_show"
+
+churn_attribution:
+  rules:
+    - label: "ad_interruption"
+      match_type: "prefix"
+      events:
+        - "ad_interstitial"
+    - label: "level_event"
+      match_type: "prefix"
+      events:
+        - "level_"
+
+markets:
+  primary: "United States"

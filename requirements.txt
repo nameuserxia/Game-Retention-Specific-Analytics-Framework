@@ -1,0 +1,29 @@
+# -*- coding: utf-8 -*-
+# requirements.txt
+# 后端 Python 依赖
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=14.0.0
+
+# 可选：大文件处理（>500MB 推荐安装）
+# polars>=0.19.0
+
+# 定时任务
+apscheduler>=3.10.0
+
+# 数据验证
+pydantic>=2.0.0
+
+# ML 特征重要性诊断
+scikit-learn>=1.3.0
+
+# 可选：Excel 支持
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0

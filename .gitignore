@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Runtime data and generated reports
+temp/
+output/
+*.log
+
+# Local tooling
+.workbuddy/
+.DS_Store
+Thumbs.db
