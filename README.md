@@ -2,7 +2,7 @@
 
 A configurable game retention analytics framework for event-log based user retention diagnosis.
 
-This public repository has been sanitized. All company/project names, internal file names, raw data references, and business-specific conclusions have been replaced with generic examples.
+
 
 ## What It Does
 
