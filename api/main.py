@@ -6,6 +6,17 @@ FastAPI 应用入口 + 定时清理任务
 
 from __future__ import annotations
 
+# ── Windows 控制台 UTF-8 修复 ─────────────────────────────
+# 防止 print/logging 含 emoji/非 ASCII 字符时触发 GBK 编码崩溃
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+# ────────────────────────────────────────────────────────────────
+
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
