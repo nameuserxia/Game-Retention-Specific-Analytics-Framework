@@ -27,6 +27,8 @@ def build_fallback_report(payload: Dict[str, Any], reason: str = "") -> LLMReten
     warnings = quality.get("warnings", []) if isinstance(quality, dict) else []
     errors = quality.get("errors", []) if isinstance(quality, dict) else []
     context = payload.get("analysis_context", {})
+    dynamic_retention = payload.get("dynamic_retention") or []
+    funnel_analysis = payload.get("funnel_analysis") or {}
     game_name = context.get("game_name") or "游戏"
 
     quality_text = "数据质量校验通过，未发现阻断性问题。"
@@ -41,6 +43,42 @@ def build_fallback_report(payload: Dict[str, Any], reason: str = "") -> LLMReten
         f"注册窗口 {summary.get('reg_start')} 至 {summary.get('reg_end')}。"
     )
 
+    segment_findings = [
+        ReportFinding(
+            title="分群结果待复核",
+            detail="已基于 Python 计算结果输出国家和渠道分群，可优先关注样本量充足且低于整体留存的分群。",
+            evidence=[],
+        )
+    ]
+    if dynamic_retention:
+        segment_findings.append(
+            ReportFinding(
+                title="动态维度分析已完成",
+                detail="已按用户配置的字段组合计算多天留存，建议优先查看 gap_vs_overall 为负且样本量充足的分组。",
+                evidence=[f"动态维度组合数：{len(dynamic_retention)}"],
+            )
+        )
+
+    funnel_findings = [
+        ReportFinding(
+            title="漏斗暂未启用",
+            detail="当前未配置漏斗步骤，建议先用路径分析定位流失前常见行为。",
+            evidence=[],
+        )
+    ]
+    if funnel_analysis.get("steps"):
+        narrowest = min(
+            funnel_analysis["steps"][1:] or funnel_analysis["steps"],
+            key=lambda item: item.get("step_conversion_rate", 1.0),
+        )
+        funnel_findings = [
+            ReportFinding(
+                title="漏斗分析已完成",
+                detail=f"转化相对较弱的步骤是 {narrowest.get('event')}，单步转化率 {narrowest.get('step_conversion_rate')}。",
+                evidence=[f"漏斗步骤数：{len(funnel_analysis.get('steps', []))}"],
+            )
+        ]
+
     return LLMRetentionReport(
         title=f"{game_name}留存诊断报告",
         quality_assessment=quality_text,
@@ -51,20 +89,8 @@ def build_fallback_report(payload: Dict[str, Any], reason: str = "") -> LLMReten
                 evidence=_evidence_from_summary(summary),
             )
         ],
-        segment_findings=[
-            ReportFinding(
-                title="分群结果待复核",
-                detail="已基于 Python 计算结果输出国家和渠道分群，可优先关注样本量充足且低于整体留存的分群。",
-                evidence=[],
-            )
-        ],
-        funnel_analysis=[
-            ReportFinding(
-                title="漏斗暂未启用",
-                detail="当前阶段尚未接入漏斗积木系统，建议先用路径分析定位流失前常见行为。",
-                evidence=[],
-            )
-        ],
+        segment_findings=segment_findings,
+        funnel_analysis=funnel_findings,
         recommendations=[
             ReportRecommendation(
                 priority="high",

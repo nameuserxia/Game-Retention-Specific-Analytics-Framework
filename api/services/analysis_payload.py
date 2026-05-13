@@ -27,6 +27,8 @@ def build_retention_payload(
     sanity_report: Dict[str, Any],
     diagnostics: Dict[str, Any],
     analysis_context: Optional[AnalysisContext] = None,
+    dynamic_retention: Optional[List[Dict[str, Any]]] = None,
+    funnel_analysis: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return aggregated data only; never include raw event logs."""
     return {
@@ -56,6 +58,8 @@ def build_retention_payload(
             "total_rows": len(cohort_matrix),
         },
         "paths": _limit_rows(top_paths, 20),
+        "dynamic_retention": dynamic_retention or [],
+        "funnel_analysis": funnel_analysis,
         "diagnostics": {
             key: value
             for key, value in (diagnostics or {}).items()

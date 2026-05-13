@@ -71,6 +71,9 @@ export interface AnalysisConfig {
   param_config?: ParamMappingConfig;
   analysis_context?: AnalysisContext;
   ai_enabled?: boolean;
+  dynamic_dimensions?: string[][];
+  funnel_steps?: string[];
+  dynamic_retention_days?: number[];
 }
 
 // ============================================================
@@ -176,6 +179,28 @@ export interface AnalysisResponse {
   report_path?: string;
   llm_used: boolean;
   llm_fallback_reason?: string;
+  dynamic_retention: Array<{
+    dimensions: string[];
+    groups: Array<{
+      group_key: string;
+      cohort_size: number;
+      retention: Record<string, number>;
+      gap_vs_overall: Record<string, number>;
+      sample_warning: boolean;
+    }>;
+    warnings: string[];
+  }>;
+  funnel_analysis?: {
+    steps: Array<{
+      event: string;
+      users: number;
+      step_conversion_rate: number;
+      overall_conversion_rate: number;
+      dropoff_users: number;
+      dropoff_rate: number;
+    }>;
+    warnings: string[];
+  } | null;
 }
 
 // ============================================================

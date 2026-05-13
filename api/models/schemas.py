@@ -94,6 +94,9 @@ class AnalyzeRequest(BaseModel):
     param_config: Optional[ParamMappingConfig] = None
     analysis_context: Optional[AnalysisContext] = None
     ai_enabled: bool = Field(default=False, description="Whether to run optional AI report generation")
+    dynamic_dimensions: Optional[List[List[str]]] = Field(default=None, description="Dynamic retention dimension combinations")
+    funnel_steps: Optional[List[str]] = Field(default=None, description="Ordered event names for funnel analysis")
+    dynamic_retention_days: Optional[List[int]] = Field(default_factory=lambda: [1, 3, 7, 14], description="Retention days for dynamic analysis")
 
 
 class JsonKeyInfo(BaseModel):
@@ -252,6 +255,8 @@ class AnalysisResponse(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Persistent Markdown report path")
     llm_used: bool = Field(default=False, description="Whether an LLM produced the structured report")
     llm_fallback_reason: Optional[str] = Field(default=None, description="Reason for AI fallback, if any")
+    dynamic_retention: List[Dict[str, Any]] = Field(default_factory=list, description="Dynamic multi-dimensional retention results")
+    funnel_analysis: Optional[Dict[str, Any]] = Field(default=None, description="Configurable funnel analysis result")
 
     class Config:
         json_schema_extra = {

@@ -222,7 +222,15 @@ export function useAnalysis() {
         session_id: state.sessionId,
         force_proceed: String(forceProceed),
       });
-      const { param_config, analysis_context, ai_enabled, ...analysisConfig } = config;
+      const {
+        param_config,
+        analysis_context,
+        ai_enabled,
+        dynamic_dimensions,
+        funnel_steps,
+        dynamic_retention_days,
+        ...analysisConfig
+      } = config;
       const response = await fetch(`${API_BASE}/api/analyze?${params}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,6 +240,9 @@ export function useAnalysis() {
           param_config,
           analysis_context,
           ai_enabled: Boolean(ai_enabled),
+          dynamic_dimensions,
+          funnel_steps,
+          dynamic_retention_days,
         }),
       });
 
@@ -289,7 +300,15 @@ export function useAnalysis() {
         session_id: state.sessionId,
         force_proceed: String(forceProceed),
       });
-      const { param_config, ...analysisConfig } = config;
+      const {
+        param_config,
+        analysis_context,
+        ai_enabled,
+        dynamic_dimensions,
+        funnel_steps,
+        dynamic_retention_days,
+        ...analysisConfig
+      } = config;
       const response = await fetch(`${API_BASE}/api/analyze/stream?${params}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -297,6 +316,11 @@ export function useAnalysis() {
           mapping,
           analysis_config: analysisConfig,
           param_config,
+          analysis_context,
+          ai_enabled: Boolean(ai_enabled),
+          dynamic_dimensions,
+          funnel_steps,
+          dynamic_retention_days,
         }),
       });
 

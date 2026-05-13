@@ -52,10 +52,50 @@ from core.analytics import (
     build_event_sequences,
     get_top_paths,
 )
+from core.dynamic_retention import calculate_dynamic_retention
+from core.funnel import calculate_funnel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
+
+
+def _normalize_dynamic_dimensions(
+    dimension_sets: Optional[List[List[str]]],
+    mapping: FieldMappingRequest,
+) -> Optional[List[List[str]]]:
+    """Map raw selected columns to standard post-mapping column names."""
+    if not dimension_sets:
+        return None
+
+    mapping_data = mapping.model_dump(exclude_none=True)
+    aliases = {}
+    standard_fields = [
+        "user_id",
+        "event_time",
+        "event_date",
+        "reg_date",
+        "event_name",
+        "country",
+        "channel",
+        "json_params",
+    ]
+    for field in standard_fields:
+        aliases[field] = field
+        actual = mapping_data.get(field)
+        if actual:
+            aliases[str(actual)] = field
+
+    for standard_name, actual_name in (mapping_data.get("extra_fields") or {}).items():
+        if standard_name:
+            aliases[str(standard_name)] = str(standard_name)
+        if actual_name and standard_name:
+            aliases[str(actual_name)] = str(standard_name)
+
+    return [
+        [aliases.get(str(dim).strip(), str(dim).strip()) for dim in dims if str(dim).strip()]
+        for dims in dimension_sets
+    ]
 
 
 @router.post("/analyze/stream")
@@ -446,6 +486,40 @@ async def run_analysis(
             except Exception as e:
                 logger.warning(f"Path analysis failed: {e}")
 
+        dynamic_retention = []
+        if request.dynamic_dimensions:
+            try:
+                dynamic_retention = calculate_dynamic_retention(
+                    df=df_mapped,
+                    cfg=field_config,
+                    reg_start=reg_start,
+                    reg_end=reg_end,
+                    dimension_sets=_normalize_dynamic_dimensions(request.dynamic_dimensions, mapping),
+                    retention_days=request.dynamic_retention_days,
+                )
+            except Exception as e:
+                logger.warning(f"Dynamic retention failed: {e}")
+                dynamic_retention = [{
+                    "dimensions": [],
+                    "groups": [],
+                    "warnings": [f"动态维度留存计算失败：{e}"],
+                }]
+
+        funnel_analysis = None
+        if request.funnel_steps:
+            try:
+                funnel_analysis = calculate_funnel(
+                    df=df_mapped,
+                    cfg=field_config,
+                    steps=request.funnel_steps,
+                )
+            except Exception as e:
+                logger.warning(f"Funnel analysis failed: {e}")
+                funnel_analysis = {
+                    "steps": [],
+                    "warnings": [f"漏斗分析计算失败：{e}"],
+                }
+
         diagnostics = {}
         if effective_param_config:
             try:
@@ -540,6 +614,8 @@ async def run_analysis(
             sanity_report=sanity_report or {},
             diagnostics=diagnostics,
             analysis_context=request.analysis_context,
+            dynamic_retention=dynamic_retention,
+            funnel_analysis=funnel_analysis,
         )
         structured_report, llm_used, llm_fallback_reason = RetentionReporter().generate(
             payload,
@@ -588,6 +664,8 @@ async def run_analysis(
             report_path=report_metadata.markdown_path if report_metadata else None,
             llm_used=llm_used,
             llm_fallback_reason=llm_fallback_reason or None,
+            dynamic_retention=dynamic_retention,
+            funnel_analysis=funnel_analysis,
         )
         
     except HTTPException:

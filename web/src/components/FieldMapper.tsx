@@ -91,12 +91,21 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     main_concern: '',
   });
   const [recentEventsInput, setRecentEventsInput] = useState('');
+  const [dimensionDraft, setDimensionDraft] = useState<string[]>([]);
+  const [dynamicDimensions, setDynamicDimensions] = useState<string[][]>([]);
+  const [funnelInput, setFunnelInput] = useState('');
+  const [funnelSteps, setFunnelSteps] = useState<string[]>([]);
 
   const requiredReady = useMemo(() => REQUIRED_FIELDS.every(item => Boolean(mapping[item.key])), [mapping]);
   const missingRequired = REQUIRED_FIELDS.filter(item => !mapping[item.key]).map(item => item.label);
   const selectedColumns = useMemo(() => Object.values(mapping).filter(Boolean).length, [mapping]);
 
   const keyOptions = useMemo(() => jsonKeys.map(item => item.key), [jsonKeys]);
+  const dynamicFieldOptions = useMemo(() => {
+    const standardFields = ['user_id', 'event_time', 'event_date', 'reg_date', 'event_name', 'country', 'channel'];
+    const virtualFields = jsonKeys.map(item => `v_${item.key.replace(/[^a-zA-Z0-9_]/g, '_')}`);
+    return unique([...schema.columns, ...standardFields, ...virtualFields]);
+  }, [jsonKeys, schema.columns]);
   const filteredColumnInfos = useMemo(() => {
     const keyword = columnSearch.trim().toLowerCase();
     const matched = keyword
@@ -199,6 +208,44 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     setParamConfig(prev => ({ ...prev, relevant_events: events }));
   }, [paramConfig.relevant_events]);
 
+  const toggleDimensionDraft = useCallback((field: string, checked: boolean) => {
+    setDimensionDraft(prev => checked ? unique([...prev, field]).slice(0, 3) : prev.filter(item => item !== field));
+  }, []);
+
+  const addDynamicDimension = useCallback(() => {
+    if (!dimensionDraft.length) return;
+    setDynamicDimensions(prev => {
+      const exists = prev.some(item => item.join('|') === dimensionDraft.join('|'));
+      return exists ? prev : [...prev, dimensionDraft];
+    });
+    setDimensionDraft([]);
+  }, [dimensionDraft]);
+
+  const removeDynamicDimension = useCallback((index: number) => {
+    setDynamicDimensions(prev => prev.filter((_, idx) => idx !== index));
+  }, []);
+
+  const addFunnelStep = useCallback((eventName?: string) => {
+    const value = (eventName ?? funnelInput).trim();
+    if (!value) return;
+    setFunnelSteps(prev => prev.length >= 10 ? prev : [...prev, value]);
+    setFunnelInput('');
+  }, [funnelInput]);
+
+  const removeFunnelStep = useCallback((index: number) => {
+    setFunnelSteps(prev => prev.filter((_, idx) => idx !== index));
+  }, []);
+
+  const moveFunnelStep = useCallback((index: number, direction: -1 | 1) => {
+    setFunnelSteps(prev => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  }, []);
+
   const handleSubmit = useCallback(() => {
     if (!requiredReady) return;
 
@@ -225,8 +272,11 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         game_genre: analysisContext.game_genre || undefined,
         main_concern: analysisContext.main_concern || undefined,
       },
+      dynamic_dimensions: dynamicDimensions.length ? dynamicDimensions : undefined,
+      funnel_steps: funnelSteps.length >= 2 ? funnelSteps : undefined,
+      dynamic_retention_days: dynamicDimensions.length ? [1, 3, 7, 14] : undefined,
     });
-  }, [analysisContext, config, enabledOptional, mapping, onValidate, paramConfig, requiredReady]);
+  }, [analysisContext, config, dynamicDimensions, enabledOptional, funnelSteps, mapping, onValidate, paramConfig, requiredReady]);
 
   const renderSelect = (field: SelectableMappingKey, required: boolean, disabled = false) => {
     const suggested = schema.suggestions?.[field]?.[0];
@@ -450,6 +500,84 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       <section className="panel">
         <div className="section-title">
           <div>
+            <p className="panel-kicker">动态分群留存</p>
+            <h3>选择任意字段组合计算 D1/D3/D7/D14</h3>
+          </div>
+          <button type="button" className="secondary-btn" onClick={addDynamicDimension} disabled={!dimensionDraft.length}>
+            添加组合
+          </button>
+        </div>
+        <div className="dimension-picker">
+          {dynamicFieldOptions.slice(0, 48).map(field => (
+            <label key={field} className="dimension-option">
+              <input
+                type="checkbox"
+                checked={dimensionDraft.includes(field)}
+                onChange={(event) => toggleDimensionDraft(field, event.target.checked)}
+                disabled={!dimensionDraft.includes(field) && dimensionDraft.length >= 3}
+              />
+              <span>{field}</span>
+            </label>
+          ))}
+        </div>
+        {dynamicDimensions.length > 0 && (
+          <div className="selected-combinations">
+            {dynamicDimensions.map((dims, index) => (
+              <span key={dims.join('|')}>
+                {dims.join(' + ')}
+                <button type="button" onClick={() => removeDynamicDimension(index)}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <p>每个组合最多 3 个字段，后端最多返回样本量最大的 100 个分组。</p>
+      </section>
+
+      <section className="panel">
+        <div className="section-title">
+          <div>
+            <p className="panel-kicker">漏斗积木</p>
+            <h3>按事件顺序搭建转化漏斗</h3>
+          </div>
+        </div>
+        <div className="funnel-input-row">
+          <input
+            value={funnelInput}
+            onChange={(event) => setFunnelInput(event.target.value)}
+            placeholder="输入 event_name 后添加"
+          />
+          <button type="button" className="secondary-btn" onClick={() => addFunnelStep()} disabled={!funnelInput.trim() || funnelSteps.length >= 10}>
+            添加步骤
+          </button>
+        </div>
+        {eventNameSamples.length > 0 && (
+          <div className="event-samples">
+            <span>样例事件</span>
+            {eventNameSamples.map(eventName => (
+              <button type="button" key={eventName} onClick={() => addFunnelStep(eventName)}>
+                {eventName}
+              </button>
+            ))}
+          </div>
+        )}
+        {funnelSteps.length > 0 && (
+          <ol className="funnel-steps">
+            {funnelSteps.map((step, index) => (
+              <li key={`${step}-${index}`}>
+                <span>{step}</span>
+                <button type="button" onClick={() => moveFunnelStep(index, -1)} disabled={index === 0}>上移</button>
+                <button type="button" onClick={() => moveFunnelStep(index, 1)} disabled={index === funnelSteps.length - 1}>下移</button>
+                <button type="button" onClick={() => removeFunnelStep(index)}>删除</button>
+              </li>
+            ))}
+          </ol>
+        )}
+        <p>至少 2 步才会计算漏斗，最多 10 步；事件必须按用户事件时间依次发生。</p>
+      </section>
+
+      <section className="panel">
+        <div className="section-title">
+          <div>
             <p className="panel-kicker">分析配置</p>
             <h3>设置注册窗口和留存口径</h3>
           </div>
@@ -568,6 +696,18 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .event-samples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
         .event-samples span { color: #667085; font-size: 13px; font-weight: 800; }
         .event-samples button { max-width: 180px; min-height: 30px; padding: 0 10px; overflow: hidden; color: #0f5132; text-overflow: ellipsis; white-space: nowrap; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 6px; cursor: pointer; }
+        .dimension-picker { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .dimension-option { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; overflow: hidden; }
+        .dimension-option input { width: 16px; height: 16px; min-height: 16px; accent-color: #0f766e; }
+        .dimension-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .selected-combinations { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .selected-combinations span { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; color: #0f5132; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 6px; font-size: 13px; font-weight: 800; }
+        .selected-combinations button { width: 22px; height: 22px; border: 0; color: #0f5132; background: transparent; cursor: pointer; font-weight: 900; }
+        .funnel-input-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+        .funnel-steps { display: grid; gap: 8px; margin: 14px 0 0; padding-left: 24px; }
+        .funnel-steps li { padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+        .funnel-steps span { display: inline-block; min-width: 180px; font-weight: 800; }
+        .funnel-steps button { margin-left: 6px; min-height: 28px; padding: 0 8px; color: #0f766e; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 800; }
         .key-table { display: grid; gap: 10px; margin-top: 16px; }
         .key-row { display: grid; grid-template-columns: 1fr 110px 110px; gap: 12px; align-items: center; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
         .key-row strong, .key-row span { display: block; }
@@ -586,7 +726,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .validate-btn:disabled, .secondary-btn:disabled { opacity: 0.55; cursor: not-allowed; }
         @media (max-width: 860px) {
           .file-panel, .section-title { flex-direction: column; }
-          .field-row, .optional-grid, .config-grid, .column-preview, .param-role-grid, .key-row { grid-template-columns: 1fr; }
+          .field-row, .optional-grid, .config-grid, .column-preview, .param-role-grid, .key-row, .dimension-picker, .funnel-input-row { grid-template-columns: 1fr; }
         }
       `}</style>
     </div>
