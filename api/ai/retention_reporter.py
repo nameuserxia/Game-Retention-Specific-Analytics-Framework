@@ -29,6 +29,8 @@ def build_fallback_report(payload: Dict[str, Any], reason: str = "") -> LLMReten
     context = payload.get("analysis_context", {})
     dynamic_retention = payload.get("dynamic_retention") or []
     funnel_analysis = payload.get("funnel_analysis") or {}
+    field_catalog = payload.get("analysis_field_catalog") or {}
+    catalog_fields = field_catalog.get("fields", []) if isinstance(field_catalog, dict) else []
     game_name = context.get("game_name") or "游戏"
 
     quality_text = "数据质量校验通过，未发现阻断性问题。"
@@ -58,6 +60,19 @@ def build_fallback_report(payload: Dict[str, Any], reason: str = "") -> LLMReten
                 evidence=[f"动态维度组合数：{len(dynamic_retention)}"],
             )
         )
+    if catalog_fields:
+        risky = [field for field in catalog_fields if field.get("health_flags")]
+        if risky:
+            segment_findings.append(
+                ReportFinding(
+                    title="AnalysisFieldCatalog 字段健康提示",
+                    detail="字段目录已标记部分不适合直接分群的字段，后续分析应优先使用 recommended_for_segmentation=true 的字段。",
+                    evidence=[
+                        f"{item.get('field_id')}: {','.join(item.get('health_flags', []))}"
+                        for item in risky[:5]
+                    ],
+                )
+            )
 
     funnel_findings = [
         ReportFinding(

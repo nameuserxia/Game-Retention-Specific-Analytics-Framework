@@ -109,6 +109,7 @@ class ParamConverter:
 
     def configured_keys(self) -> List[str]:
         keys: List[str] = []
+        keys.extend(self.config.extracted_keys or [])
         for key in [self.config.progress_key, self.config.result_key]:
             if key:
                 keys.append(key)

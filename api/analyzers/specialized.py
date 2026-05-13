@@ -162,6 +162,7 @@ class RetentionDiagnosticAnalyzer(SpecializedAnalyzer):
         retention_days: int,
     ) -> Dict[str, Any]:
         candidates = ["country", "channel"]
+        candidates.extend([f"v_{key}" for key in (self.param_config.extracted_keys if self.param_config else [])])
         candidates.extend([f"v_{key}" for key in (self.param_config.segment_keys if self.param_config else [])])
         if self.param_config and self.param_config.progress_key:
             candidates.append(f"v_{self.param_config.progress_key}")

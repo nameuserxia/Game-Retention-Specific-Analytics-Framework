@@ -78,13 +78,14 @@ class AnalysisConfig(BaseModel):
 
 
 class ParamMappingConfig(BaseModel):
-    """JSON 参数 Key 到业务用途的映射配置"""
-    json_params_col: Optional[str] = Field(None, description="原始 JSON 参数列")
-    progress_key: Optional[str] = Field(None, description="进度维度 Key，如 level_id")
-    result_key: Optional[str] = Field(None, description="结果状态 Key，如 state")
-    numeric_keys: List[str] = Field(default_factory=list, description="数值指标 Key，如 step/time")
-    segment_keys: List[str] = Field(default_factory=list, description="作为分群维度的 JSON Key")
-    relevant_events: List[str] = Field(default_factory=list, description="这些 JSON Key 应该出现的 event_name 列表，用于条件缺失率校验")
+    """Event parameter extraction config with legacy role hints."""
+    json_params_col: Optional[str] = Field(None, description="Source JSON/event parameter column")
+    extracted_keys: List[str] = Field(default_factory=list, description="Event parameter keys to extract into v_* fields")
+    progress_key: Optional[str] = Field(None, description="Legacy progress key for advanced diagnostics")
+    result_key: Optional[str] = Field(None, description="Legacy result/status key for advanced diagnostics")
+    numeric_keys: List[str] = Field(default_factory=list, description="Legacy numeric keys for advanced diagnostics")
+    segment_keys: List[str] = Field(default_factory=list, description="Legacy segmentation keys for advanced diagnostics")
+    relevant_events: List[str] = Field(default_factory=list, description="Event names where extracted parameters are expected")
 
 
 class AnalyzeRequest(BaseModel):
@@ -94,6 +95,7 @@ class AnalyzeRequest(BaseModel):
     param_config: Optional[ParamMappingConfig] = None
     analysis_context: Optional[AnalysisContext] = None
     ai_enabled: bool = Field(default=False, description="Whether to run optional AI report generation")
+    analysis_fields: Optional[List[str]] = Field(default=None, description="Selected analysis field IDs from the catalog")
     dynamic_dimensions: Optional[List[List[str]]] = Field(default=None, description="Dynamic retention dimension combinations")
     funnel_steps: Optional[List[str]] = Field(default=None, description="Ordered event names for funnel analysis")
     dynamic_retention_days: Optional[List[int]] = Field(default_factory=lambda: [1, 3, 7, 14], description="Retention days for dynamic analysis")
@@ -232,6 +234,29 @@ class CohortCell(BaseModel):
     n_users: int = Field(..., description="该日 Cohort 用户数")
 
 
+class AnalysisField(BaseModel):
+    """Field-level metadata for analysis dimensions."""
+    field_id: str
+    label: str
+    source_type: str
+    source_column: Optional[str] = None
+    dtype: str = "unknown"
+    cardinality: int = 0
+    null_ratio: float = 0.0
+    sample_values: List[Any] = Field(default_factory=list)
+    health_flags: List[str] = Field(default_factory=list)
+    recommended_for_segmentation: bool = False
+    available_for: List[str] = Field(default_factory=list)
+
+
+class AnalysisFieldCatalog(BaseModel):
+    """Enhanced catalog of fields that can participate in analysis."""
+    status: str = Field(default="ok")
+    fields: List[AnalysisField] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
+
+
 class AnalysisResponse(BaseModel):
     """分析结果响应"""
     session_id: str = Field(..., description="会话 ID")
@@ -255,6 +280,8 @@ class AnalysisResponse(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Persistent Markdown report path")
     llm_used: bool = Field(default=False, description="Whether an LLM produced the structured report")
     llm_fallback_reason: Optional[str] = Field(default=None, description="Reason for AI fallback, if any")
+    analysis_field_catalog: Optional[AnalysisFieldCatalog] = Field(default=None, description="Enhanced analysis field catalog")
+    analysis_field_warnings: List[str] = Field(default_factory=list, description="Warnings from analysis field validation")
     dynamic_retention: List[Dict[str, Any]] = Field(default_factory=list, description="Dynamic multi-dimensional retention results")
     funnel_analysis: Optional[Dict[str, Any]] = Field(default=None, description="Configurable funnel analysis result")
 

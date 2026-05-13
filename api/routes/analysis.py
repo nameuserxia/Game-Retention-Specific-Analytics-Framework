@@ -40,6 +40,11 @@ from api.agent.context_builder import ContextBuilder
 from api.agent.model_gateway import LLMConfig, ModelGateway
 from api.ai.retention_reporter import RetentionReporter
 from api.services.analysis_payload import build_retention_payload
+from api.services.analysis_fields import (
+    build_analysis_field_catalog,
+    fallback_analysis_field_catalog,
+    validate_analysis_dimensions,
+)
 from api.services.markdown_report import render_markdown_report
 from api.services.report_store import ReportStore
 from core.analytics import (
@@ -324,6 +329,24 @@ async def run_analysis(
             df_mapped = converter.transform(df_mapped)
             virtual_fields = converter.virtual_fields
 
+        analysis_field_warnings = []
+        try:
+            analysis_field_catalog = build_analysis_field_catalog(
+                df=df_mapped,
+                mapping=mapping,
+                virtual_fields=virtual_fields,
+                param_config=effective_param_config,
+            )
+        except Exception as e:
+            logger.warning("Analysis field catalog build failed: %s", e)
+            analysis_field_catalog = fallback_analysis_field_catalog(
+                df=df_mapped,
+                mapping=mapping,
+                virtual_fields=virtual_fields,
+                reason=str(e),
+            )
+            analysis_field_warnings.extend(analysis_field_catalog.warnings)
+
         model_diagnostics = {
             "status": "disabled",
             "reason": "Correlation-based attribution is disabled in the current phase.",
@@ -489,14 +512,22 @@ async def run_analysis(
         dynamic_retention = []
         if request.dynamic_dimensions:
             try:
+                validated_dimensions, dimension_warnings = validate_analysis_dimensions(
+                    _normalize_dynamic_dimensions(request.dynamic_dimensions, mapping),
+                    analysis_field_catalog,
+                    selected_fields=request.analysis_fields,
+                )
+                analysis_field_warnings.extend(dimension_warnings)
                 dynamic_retention = calculate_dynamic_retention(
                     df=df_mapped,
                     cfg=field_config,
                     reg_start=reg_start,
                     reg_end=reg_end,
-                    dimension_sets=_normalize_dynamic_dimensions(request.dynamic_dimensions, mapping),
+                    dimension_sets=validated_dimensions,
                     retention_days=request.dynamic_retention_days,
                 )
+                if analysis_field_warnings and dynamic_retention:
+                    dynamic_retention[0].setdefault("warnings", []).extend(analysis_field_warnings)
             except Exception as e:
                 logger.warning(f"Dynamic retention failed: {e}")
                 dynamic_retention = [{
@@ -614,6 +645,9 @@ async def run_analysis(
             sanity_report=sanity_report or {},
             diagnostics=diagnostics,
             analysis_context=request.analysis_context,
+            analysis_fields=request.analysis_fields,
+            analysis_field_catalog=analysis_field_catalog,
+            analysis_field_warnings=analysis_field_warnings,
             dynamic_retention=dynamic_retention,
             funnel_analysis=funnel_analysis,
         )
@@ -664,6 +698,8 @@ async def run_analysis(
             report_path=report_metadata.markdown_path if report_metadata else None,
             llm_used=llm_used,
             llm_fallback_reason=llm_fallback_reason or None,
+            analysis_field_catalog=analysis_field_catalog,
+            analysis_field_warnings=analysis_field_warnings,
             dynamic_retention=dynamic_retention,
             funnel_analysis=funnel_analysis,
         )

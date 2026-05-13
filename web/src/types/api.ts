@@ -21,6 +21,7 @@ export interface FieldMappingRequest {
 
 export interface ParamMappingConfig {
   json_params_col?: string;
+  extracted_keys: string[];
   progress_key?: string;
   result_key?: string;
   numeric_keys: string[];
@@ -71,6 +72,7 @@ export interface AnalysisConfig {
   param_config?: ParamMappingConfig;
   analysis_context?: AnalysisContext;
   ai_enabled?: boolean;
+  analysis_fields?: string[];
   dynamic_dimensions?: string[][];
   funnel_steps?: string[];
   dynamic_retention_days?: number[];
@@ -157,6 +159,27 @@ export interface TopPath {
   pct: number;
 }
 
+export interface AnalysisField {
+  field_id: string;
+  label: string;
+  source_type: 'standard' | 'raw' | 'virtual' | string;
+  source_column?: string | null;
+  dtype: string;
+  cardinality: number;
+  null_ratio: number;
+  sample_values: unknown[];
+  health_flags: string[];
+  recommended_for_segmentation: boolean;
+  available_for: string[];
+}
+
+export interface AnalysisFieldCatalog {
+  status: string;
+  fields: AnalysisField[];
+  warnings: string[];
+  fallback_reason?: string | null;
+}
+
 export interface AnalysisResponse {
   session_id: string;
   success: boolean;
@@ -179,6 +202,8 @@ export interface AnalysisResponse {
   report_path?: string;
   llm_used: boolean;
   llm_fallback_reason?: string;
+  analysis_field_catalog?: AnalysisFieldCatalog | null;
+  analysis_field_warnings: string[];
   dynamic_retention: Array<{
     dimensions: string[];
     groups: Array<{

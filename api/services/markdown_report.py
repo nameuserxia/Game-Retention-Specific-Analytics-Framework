@@ -40,6 +40,9 @@ def render_markdown_report(report: LLMRetentionReport, payload: Dict[str, Any]) 
     errors = quality.get("errors", []) if isinstance(quality, dict) else []
     dynamic_retention = payload.get("dynamic_retention") or []
     funnel_analysis = payload.get("funnel_analysis")
+    field_catalog = payload.get("analysis_field_catalog") or {}
+    field_catalog_warnings = field_catalog.get("warnings", []) if isinstance(field_catalog, dict) else []
+    catalog_fields = field_catalog.get("fields", []) if isinstance(field_catalog, dict) else []
 
     title = report.title or "留存分析报告"
     generated_at = payload.get("created_at") or datetime.now().isoformat(timespec="seconds")
@@ -53,6 +56,23 @@ def render_markdown_report(report: LLMRetentionReport, payload: Dict[str, Any]) 
     ]
 
     next_checks = [f"- {item}" for item in report.next_checks] or ["- 继续按相同口径观察 D1/D3/D7 留存变化。"]
+    catalog_lines: List[str] = []
+    if catalog_fields:
+        recommended = [field for field in catalog_fields if field.get("recommended_for_segmentation")]
+        risky = [field for field in catalog_fields if field.get("health_flags")]
+        catalog_lines.append(f"- Catalog status: {field_catalog.get('status', 'unknown')}")
+        catalog_lines.append(f"- Analysis fields: {len(catalog_fields)}")
+        catalog_lines.append(f"- Recommended segmentation fields: {len(recommended)}")
+        if risky:
+            catalog_lines.append("- Field health flags: " + "; ".join(
+                f"{item.get('field_id')}={','.join(item.get('health_flags', []))}"
+                for item in risky[:8]
+            ))
+        for warning in field_catalog_warnings[:5]:
+            catalog_lines.append(f"- Warning: {warning}")
+    else:
+        catalog_lines.append("- AnalysisFieldCatalog unavailable; compatible fallback flow was used.")
+
     dynamic_lines: List[str] = []
     if dynamic_retention:
         for item in dynamic_retention[:5]:
@@ -124,6 +144,10 @@ def render_markdown_report(report: LLMRetentionReport, payload: Dict[str, Any]) 
         content.extend([f"- {item}" for item in [*errors[:5], *warnings[:5]]])
 
     content.extend([
+        "",
+        "## AnalysisFieldCatalog",
+        "",
+        *catalog_lines,
         "",
         "## 留存诊断",
         "",

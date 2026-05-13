@@ -36,6 +36,27 @@ function unique(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+interface LocalAnalysisField {
+  field_id: string;
+  label: string;
+  source_type: 'standard' | 'raw' | 'virtual';
+  dtype: string;
+  sample_values: unknown[];
+  health_flags: string[];
+  recommended_for_segmentation: boolean;
+}
+
+function virtualFieldName(key: string) {
+  return `v_${key.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+}
+
+function localHealthFlags(fieldId: string) {
+  const flags: string[] = [];
+  const lower = fieldId.toLowerCase();
+  if (/(^|_)(id|uuid|guid|trace|device|session|distinct)(_|$)/.test(lower)) flags.push('likely_identifier');
+  return flags;
+}
+
 export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }: FieldMapperProps) {
   const suggestedRegStart = schema.stats?.suggested_reg_start || '';
   const suggestedRegEnd = schema.stats?.suggested_reg_end || '';
@@ -64,6 +85,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
   const [columnSearch, setColumnSearch] = useState('');
   const [paramConfig, setParamConfig] = useState<ParamMappingConfig>({
     json_params_col: schema.columns.includes('pri_params') ? 'json_params' : undefined,
+    extracted_keys: [],
     progress_key: '',
     result_key: '',
     numeric_keys: [],
@@ -91,6 +113,12 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     main_concern: '',
   });
   const [recentEventsInput, setRecentEventsInput] = useState('');
+  const [analysisFields, setAnalysisFields] = useState<string[]>(
+    unique([
+      schema.suggestions?.country?.[0] ? 'country' : '',
+      schema.suggestions?.channel?.[0] ? 'channel' : '',
+    ]),
+  );
   const [dimensionDraft, setDimensionDraft] = useState<string[]>([]);
   const [dynamicDimensions, setDynamicDimensions] = useState<string[][]>([]);
   const [funnelInput, setFunnelInput] = useState('');
@@ -101,11 +129,40 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
   const selectedColumns = useMemo(() => Object.values(mapping).filter(Boolean).length, [mapping]);
 
   const keyOptions = useMemo(() => jsonKeys.map(item => item.key), [jsonKeys]);
-  const dynamicFieldOptions = useMemo(() => {
-    const standardFields = ['user_id', 'event_time', 'event_date', 'reg_date', 'event_name', 'country', 'channel'];
-    const virtualFields = jsonKeys.map(item => `v_${item.key.replace(/[^a-zA-Z0-9_]/g, '_')}`);
-    return unique([...schema.columns, ...standardFields, ...virtualFields]);
-  }, [jsonKeys, schema.columns]);
+  const analysisFieldOptions = useMemo<LocalAnalysisField[]>(() => {
+    const columnInfo = new Map(schema.column_infos.map(column => [column.name, column]));
+    const options: LocalAnalysisField[] = [];
+    const addField = (fieldId: string, label: string, sourceType: LocalAnalysisField['source_type'], sourceColumn?: string) => {
+      if (!fieldId || options.some(item => item.field_id === fieldId)) return;
+      const info = columnInfo.get(sourceColumn || fieldId);
+      const samples = info?.sample_values || [];
+      const healthFlags = localHealthFlags(fieldId);
+      const recommended = sourceType !== 'standard' || ['country', 'channel'].includes(fieldId);
+      options.push({
+        field_id: fieldId,
+        label,
+        source_type: sourceType,
+        dtype: info?.dtype || (sourceType === 'virtual' ? 'event_param' : 'unknown'),
+        sample_values: samples,
+        health_flags: healthFlags,
+        recommended_for_segmentation: recommended && healthFlags.length === 0 && !['user_id', 'event_time', 'event_date', 'reg_date', 'event_name', 'json_params'].includes(fieldId),
+      });
+    };
+
+    addField('country', 'country', 'standard', mapping.country || 'country');
+    addField('channel', 'channel', 'standard', mapping.channel || 'channel');
+    addField('event_name', 'event_name', 'standard', mapping.event_name || 'event_name');
+    schema.columns.forEach(column => {
+      const mappedColumns = [mapping.user_id, mapping.event_time, mapping.event_date, mapping.reg_date, mapping.event_name, mapping.country, mapping.channel, mapping.json_params];
+      if (!mappedColumns.includes(column)) addField(column, column, 'raw', column);
+    });
+    (paramConfig.extracted_keys || []).forEach(key => addField(virtualFieldName(key), key, 'virtual', mapping.json_params || 'json_params'));
+    return options;
+  }, [mapping, paramConfig.extracted_keys, schema.column_infos, schema.columns]);
+  const selectedAnalysisFieldOptions = useMemo(
+    () => analysisFieldOptions.filter(field => analysisFields.includes(field.field_id)),
+    [analysisFieldOptions, analysisFields],
+  );
   const filteredColumnInfos = useMemo(() => {
     const keyword = columnSearch.trim().toLowerCase();
     const matched = keyword
@@ -128,7 +185,8 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
     if (field === 'json_params') {
       setJsonKeys([]);
       setJsonError('');
-      setParamConfig(prev => ({ ...prev, json_params_col: value ? 'json_params' : undefined }));
+      setParamConfig(prev => ({ ...prev, json_params_col: value ? 'json_params' : undefined, extracted_keys: [] }));
+      setAnalysisFields(prev => prev.filter(item => !item.startsWith('v_')));
     }
   }, []);
 
@@ -143,11 +201,18 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       if (field === 'json_params') {
         setJsonKeys([]);
         setRelevantEventsInput('');
-        setParamConfig({ json_params_col: undefined, progress_key: '', result_key: '', numeric_keys: [], segment_keys: [], relevant_events: [] });
+        setParamConfig({ json_params_col: undefined, extracted_keys: [], progress_key: '', result_key: '', numeric_keys: [], segment_keys: [], relevant_events: [] });
+        setAnalysisFields(prev => prev.filter(item => !item.startsWith('v_')));
       }
     }
-    if (field === 'country') handleConfigChange('segment_by_country', checked);
-    if (field === 'channel') handleConfigChange('segment_by_channel', checked);
+    if (field === 'country') {
+      handleConfigChange('segment_by_country', checked);
+      setAnalysisFields(prev => checked ? unique([...prev, 'country']) : prev.filter(item => item !== 'country'));
+    }
+    if (field === 'channel') {
+      handleConfigChange('segment_by_channel', checked);
+      setAnalysisFields(prev => checked ? unique([...prev, 'channel']) : prev.filter(item => item !== 'channel'));
+    }
   }, [handleConfigChange]);
 
   const detectJsonKeys = useCallback(async () => {
@@ -162,6 +227,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       const numeric = result.keys.filter(item => item.suggested_role === 'numeric').slice(0, 2).map(item => item.key);
       setParamConfig(prev => ({
         json_params_col: 'json_params',
+        extracted_keys: prev.extracted_keys || [],
         progress_key: progress,
         result_key: state,
         numeric_keys: numeric,
@@ -184,6 +250,25 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
       ...prev,
       [field]: checked ? unique([...(prev[field] || []), key]) : (prev[field] || []).filter(item => item !== key),
     }));
+  }, []);
+
+  const toggleExtractedKey = useCallback((key: string, checked: boolean) => {
+    const virtualName = virtualFieldName(key);
+    setParamConfig(prev => ({
+      ...prev,
+      extracted_keys: checked ? unique([...(prev.extracted_keys || []), key]) : (prev.extracted_keys || []).filter(item => item !== key),
+    }));
+    setAnalysisFields(prev => checked ? unique([...prev, virtualName]) : prev.filter(item => item !== virtualName));
+    setDimensionDraft(prev => checked ? prev : prev.filter(item => item !== virtualName));
+    setDynamicDimensions(prev => checked ? prev : prev.filter(dims => !dims.includes(virtualName)));
+  }, []);
+
+  const toggleAnalysisField = useCallback((fieldId: string, checked: boolean) => {
+    setAnalysisFields(prev => checked ? unique([...prev, fieldId]) : prev.filter(item => item !== fieldId));
+    if (!checked) {
+      setDimensionDraft(prev => prev.filter(item => item !== fieldId));
+      setDynamicDimensions(prev => prev.filter(dims => !dims.includes(fieldId)));
+    }
   }, []);
 
   const updateRelevantEvents = useCallback((value: string) => {
@@ -272,11 +357,12 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         game_genre: analysisContext.game_genre || undefined,
         main_concern: analysisContext.main_concern || undefined,
       },
+      analysis_fields: analysisFields.length ? analysisFields : undefined,
       dynamic_dimensions: dynamicDimensions.length ? dynamicDimensions : undefined,
       funnel_steps: funnelSteps.length >= 2 ? funnelSteps : undefined,
       dynamic_retention_days: dynamicDimensions.length ? [1, 3, 7, 14] : undefined,
     });
-  }, [analysisContext, config, dynamicDimensions, enabledOptional, funnelSteps, mapping, onValidate, paramConfig, requiredReady]);
+  }, [analysisContext, analysisFields, config, dynamicDimensions, enabledOptional, funnelSteps, mapping, onValidate, paramConfig, requiredReady]);
 
   const renderSelect = (field: SelectableMappingKey, required: boolean, disabled = false) => {
     const suggested = schema.suggestions?.[field]?.[0];
@@ -366,11 +452,11 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         <section className="panel">
           <div className="section-title">
             <div>
-              <p className="panel-kicker">第三步：JSON Key 映射</p>
-              <h3>声明参数 Key 的业务用途</h3>
+              <p className="panel-kicker">第三步：事件参数展开</p>
+              <h3>从 JSON/event_params 中提取可分析字段</h3>
             </div>
             <button type="button" className="secondary-btn" onClick={detectJsonKeys} disabled={jsonDetecting}>
-              {jsonDetecting ? '探测中...' : '自动探测 Key'}
+              {jsonDetecting ? '探测中...' : '自动探测参数'}
             </button>
           </div>
 
@@ -428,6 +514,14 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
                     <label>
                       <input
                         type="checkbox"
+                        checked={(paramConfig.extracted_keys || []).includes(item.key)}
+                        onChange={(event) => toggleExtractedKey(item.key, event.target.checked)}
+                      />
+                      展开为字段
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
                         checked={paramConfig.numeric_keys.includes(item.key)}
                         onChange={(event) => toggleParamList('numeric_keys', item.key, event.target.checked)}
                       />
@@ -446,7 +540,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
               </div>
             </>
           ) : (
-            <p className="empty-json">点击“自动探测 Key”后，可以把 level_id 声明为进度维度，把 state 声明为结果状态，把 step 声明为数值指标。</p>
+            <p className="empty-json">点击“自动探测参数”后，可以把 level_id 声明为进度维度，把 state 声明为结果状态，把 step 声明为数值指标。</p>
           )}
         </section>
       )}
@@ -507,16 +601,34 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
             添加组合
           </button>
         </div>
-        <div className="dimension-picker">
-          {dynamicFieldOptions.slice(0, 48).map(field => (
-            <label key={field} className="dimension-option">
+        <div className="analysis-field-grid">
+          {analysisFieldOptions.slice(0, 72).map(field => (
+            <label
+              key={field.field_id}
+              className={`analysis-field-option ${field.recommended_for_segmentation ? 'recommended' : 'risky'}`}
+              title={field.health_flags.length ? field.health_flags.join(', ') : 'recommended'}
+            >
               <input
                 type="checkbox"
-                checked={dimensionDraft.includes(field)}
-                onChange={(event) => toggleDimensionDraft(field, event.target.checked)}
-                disabled={!dimensionDraft.includes(field) && dimensionDraft.length >= 3}
+                checked={analysisFields.includes(field.field_id)}
+                onChange={(event) => toggleAnalysisField(field.field_id, event.target.checked)}
               />
-              <span>{field}</span>
+              <span>{field.field_id}</span>
+              <small>{field.source_type}{field.health_flags.length ? ` · ${field.health_flags.join(', ')}` : ''}</small>
+            </label>
+          ))}
+        </div>
+        <p>先选择分析字段，再用已选字段搭建动态留存组合。高风险字段仍可选，但不会默认推荐。</p>
+        <div className="dimension-picker">
+          {selectedAnalysisFieldOptions.slice(0, 48).map(field => (
+            <label key={field.field_id} className="dimension-option">
+              <input
+                type="checkbox"
+                checked={dimensionDraft.includes(field.field_id)}
+                onChange={(event) => toggleDimensionDraft(field.field_id, event.target.checked)}
+                disabled={!dimensionDraft.includes(field.field_id) && dimensionDraft.length >= 3}
+              />
+              <span>{field.field_id}</span>
             </label>
           ))}
         </div>
@@ -700,6 +812,13 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .dimension-option { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; overflow: hidden; }
         .dimension-option input { width: 16px; height: 16px; min-height: 16px; accent-color: #0f766e; }
         .dimension-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .analysis-field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+        .analysis-field-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 4px 8px; align-items: center; min-height: 54px; padding: 9px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px; }
+        .analysis-field-option.recommended { background: #f0fbf8; border-color: #b7e4cc; }
+        .analysis-field-option.risky { background: #fffbeb; border-color: #fde68a; }
+        .analysis-field-option input { width: 16px; height: 16px; accent-color: #0f766e; }
+        .analysis-field-option span, .analysis-field-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .analysis-field-option small { grid-column: 2; color: #667085; font-weight: 600; }
         .selected-combinations { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
         .selected-combinations span { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; color: #0f5132; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 6px; font-size: 13px; font-weight: 800; }
         .selected-combinations button { width: 22px; height: 22px; border: 0; color: #0f5132; background: transparent; cursor: pointer; font-weight: 900; }
@@ -709,7 +828,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .funnel-steps span { display: inline-block; min-width: 180px; font-weight: 800; }
         .funnel-steps button { margin-left: 6px; min-height: 28px; padding: 0 8px; color: #0f766e; background: #e8f7ef; border: 1px solid #b7e4cc; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 800; }
         .key-table { display: grid; gap: 10px; margin-top: 16px; }
-        .key-row { display: grid; grid-template-columns: 1fr 110px 110px; gap: 12px; align-items: center; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+        .key-row { display: grid; grid-template-columns: 1fr 120px 110px 110px; gap: 12px; align-items: center; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
         .key-row strong, .key-row span { display: block; }
         .key-row span { margin-top: 4px; color: #667085; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .key-row label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
@@ -726,7 +845,7 @@ export function FieldMapper({ schema, onValidate, onDetectJsonKeys, isLoading }:
         .validate-btn:disabled, .secondary-btn:disabled { opacity: 0.55; cursor: not-allowed; }
         @media (max-width: 860px) {
           .file-panel, .section-title { flex-direction: column; }
-          .field-row, .optional-grid, .config-grid, .column-preview, .param-role-grid, .key-row, .dimension-picker, .funnel-input-row { grid-template-columns: 1fr; }
+          .field-row, .optional-grid, .config-grid, .column-preview, .param-role-grid, .key-row, .dimension-picker, .analysis-field-grid, .funnel-input-row { grid-template-columns: 1fr; }
         }
       `}</style>
     </div>
